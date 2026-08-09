@@ -38,6 +38,8 @@ interface AuthContextValue {
   clearPin: (memberId: string) => Promise<void>
   /** Manual sign-in from the login screen. Returns an error message or null. */
   signIn: (email: string, password: string) => Promise<string | null>
+  /** Send a password-reset email. Returns an error message or null. */
+  resetPassword: (email: string) => Promise<string | null>
   refresh: () => Promise<void>
 }
 
@@ -174,6 +176,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [family, memberPins]
   )
 
+  const resetPassword = useCallback(async (email: string): Promise<string | null> => {
+    const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    })
+    return resetErr?.message ?? null
+  }, [])
+
   const refresh = useCallback(async () => {
     if (session?.user) await loadContext(session.user.id)
   }, [session, loadContext])
@@ -193,6 +202,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     savePin,
     clearPin,
     signIn,
+    resetPassword,
     refresh,
   }
 

@@ -5,6 +5,8 @@
 
 export const FAMILY_ID = 'eaa7a6df-8ac6-40a5-8a5f-ced5dc745353'
 
+export const APP_VERSION = 'v1.0.0 Beta'
+
 export const CHORE_CATEGORIES = [
   'academic',
   'household',
