@@ -82,6 +82,7 @@ export default function ChildChores() {
     const due = i.due_date ? new Date(i.due_date).getTime() : null
     if (filter === 'completed') return i.status === 'approved'
     if (i.status === 'approved') return false // active views hide fully-approved
+    if (i.status === 'expired') return false // missed chores don't carry over
     if (filter === 'all') return true
     if (!due) return false
     if (filter === 'today') return due >= todayStart && due <= todayEnd

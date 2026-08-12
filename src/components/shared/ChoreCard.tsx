@@ -8,6 +8,7 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
+  CalendarX,
   type LucideIcon,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
@@ -38,7 +39,12 @@ export function ChoreCard({ assignment, currency = 'USD', onComplete }: ChoreCar
   const chore = assignment.chore
   const Icon = categoryIcon(chore?.category)
   const status = assignment.status ?? 'pending'
-  const canComplete = status === 'pending' || status === 'in_progress'
+  // A chore whose due date has passed is missed, even if the expiry sweep
+  // hasn't run yet — never offer Complete on one the server would reject.
+  const lapsed = !!assignment.due_date && new Date(assignment.due_date) < new Date()
+  const open = status === 'pending' || status === 'in_progress'
+  const canComplete = open && !lapsed
+  const missed = status === 'expired' || (open && lapsed)
 
   async function handleComplete() {
     if (!onComplete || busy) return
@@ -90,6 +96,11 @@ export function ChoreCard({ assignment, currency = 'USD', onComplete }: ChoreCar
             {status === 'approved' && (
               <StatusPill icon={CheckCircle2} className="text-green">
                 Approved
+              </StatusPill>
+            )}
+            {missed && (
+              <StatusPill icon={CalendarX} className="text-text-muted">
+                Missed — a new one comes next time
               </StatusPill>
             )}
             {status === 'rejected' && (

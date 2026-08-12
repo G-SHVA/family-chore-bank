@@ -41,17 +41,72 @@ function endOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999)
 }
 
-/** The current period window for a recurring frequency. `once` has no window. */
-function periodWindow(freq: Frequency, now: Date): { start: Date; end: Date } {
+/** The period window *containing* `ref` for a recurring frequency. */
+function periodWindow(freq: Frequency, ref: Date): { start: Date; end: Date } {
   switch (freq) {
     case 'weekly':
-      return { start: startOfWeek(now), end: endOfWeek(now) }
+      return { start: startOfWeek(ref), end: endOfWeek(ref) }
     case 'monthly':
-      return { start: startOfMonth(now), end: endOfMonth(now) }
+      return { start: startOfMonth(ref), end: endOfMonth(ref) }
     case 'daily':
     default:
-      return { start: startOfDay(now), end: endOfDay(now) }
+      return { start: startOfDay(ref), end: endOfDay(ref) }
   }
+}
+
+/** Day-of-week values as stored in chore_assignments.recurrence_dow. */
+export const DAY_LABELS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+] as const
+
+export function dayLabel(dow: number | null | undefined): string | null {
+  return dow === null || dow === undefined ? null : (DAY_LABELS[dow] ?? null)
+}
+
+/**
+ * The due date for a weekly chore pinned to a day of week — this week's
+ * occurrence of that day. Returns null when the day has already passed: the
+ * chore simply doesn't run this week, and next Monday's pass generates it for
+ * the coming week. (Rolling forward instead would drop a chore due six days
+ * out onto the child's list immediately.)
+ */
+function weeklyDueDate(dow: number, now: Date): Date | null {
+  const weekStart = startOfWeek(now) // Monday
+  const target = new Date(weekStart)
+  target.setDate(weekStart.getDate() + ((dow + 6) % 7)) // Monday = 0 … Sunday = 6
+  const due = endOfDay(target)
+  return due < now ? null : due
+}
+
+/** When the next instance of a template should fall due, or null to skip. */
+function nextDueDate(freq: Frequency, dow: number | null, now: Date): Date | null {
+  if (freq === 'once') return endOfDay(now)
+  if (freq === 'weekly' && dow !== null) return weeklyDueDate(dow, now)
+  return periodWindow(freq, now).end
+}
+
+/**
+ * Marks lapsed instances expired: anything still untouched or in progress once
+ * its due date has passed. Missed chores do NOT carry over — a fresh instance
+ * is generated for the next period, and the expired row stays as history.
+ * Idempotent; runs as the first step of every generation pass.
+ */
+export async function expireLapsedAssignments(now: Date = new Date()): Promise<number> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .update({ status: 'expired' })
+    .eq('is_template', false)
+    .in('status', ['pending', 'in_progress'])
+    .lt('due_date', now.toISOString())
+    .select('id')
+  if (error) throw error
+  return data?.length ?? 0
 }
 
 function isSameDay(a: Date, b: Date) {
@@ -83,10 +138,14 @@ export function generateDailyAssignments(now: Date = new Date()): Promise<number
 }
 
 async function runGeneration(now: Date): Promise<number> {
+  // Retire anything that lapsed before generating this period's fresh set.
+  await expireLapsedAssignments(now)
+
   const { data: templates, error } = await supabase
     .from('chore_assignments')
     .select('*, chore:chores(*)')
     .eq('is_template', true)
+    .eq('is_active', true)
   if (error) throw error
   if (!templates || templates.length === 0) return 0
 
@@ -121,13 +180,18 @@ async function runGeneration(now: Date): Promise<number> {
       continue
     }
 
-    const win = periodWindow(freq, now)
+    // Dedupe against the period that *contains the target due date*, so a
+    // weekly chore pinned to a weekday that has already passed rolls to next
+    // week without also generating a second instance when that week arrives.
+    const due = nextDueDate(freq, t.recurrence_dow, now)
+    if (!due) continue // pinned weekday already passed — resumes next week
+    const win = periodWindow(freq, due)
     const hasThisPeriod = existing.some((i) => {
       if (!i.due_date) return false
-      const due = new Date(i.due_date)
-      return due >= win.start && due <= win.end
+      const d = new Date(i.due_date)
+      return d >= win.start && d <= win.end
     })
-    if (!hasThisPeriod) toInsert.push(buildInstance(t, win.end))
+    if (!hasThisPeriod) toInsert.push(buildInstance(t, due))
   }
 
   if (toInsert.length === 0) return 0
@@ -269,14 +333,21 @@ function computeStreak(instances: AssignmentWithChore[], now: Date): number {
  * Child marks a chore instance complete. Sets status = 'completed' (awaiting
  * parent approval). NO balance change happens here — the balance is credited
  * only on parent approval via the approve_chore RPC (Step 5).
+ *
+ * Returns false when the row was no longer completable (already handed in, or
+ * lapsed past its due date while the screen was open) so the caller can refresh.
  */
-export async function markChoreComplete(assignmentId: string): Promise<void> {
-  const { error } = await supabase
+export async function markChoreComplete(assignmentId: string): Promise<boolean> {
+  const { data, error } = await supabase
     .from('chore_assignments')
     .update({ status: 'completed', completed_at: new Date().toISOString() })
     .eq('id', assignmentId)
     .eq('is_template', false)
+    .in('status', ['pending', 'in_progress'])
+    .gte('due_date', new Date().toISOString())
+    .select('id')
   if (error) throw error
+  return (data?.length ?? 0) > 0
 }
 
 /* ------------------------------------------------------------------ *
@@ -326,11 +397,15 @@ export async function rejectChore(assignmentId: string, notes: string): Promise<
  * Assign a chore to a child — creates a ROSTER TEMPLATE row (is_template = true).
  * The generator turns it into per-period instances. (Per the data model, the
  * chores library is never copied; assignment lives in chore_assignments.)
+ *
+ * `recurrenceDow` (0 = Sunday … 6 = Saturday) pins a weekly chore to a day of
+ * the week; null keeps the legacy "due by end of week" behaviour.
  */
 export async function quickAssignChore(
   choreId: string,
   memberId: string,
-  assignedBy: string
+  assignedBy: string,
+  recurrenceDow: number | null = null
 ): Promise<void> {
   const { error } = await supabase.from('chore_assignments').insert({
     chore_id: choreId,
@@ -338,7 +413,31 @@ export async function quickAssignChore(
     assigned_by: assignedBy,
     status: 'pending',
     is_template: true,
+    is_active: true,
+    recurrence_dow: recurrenceDow,
   })
+  if (error) throw error
+}
+
+/** Assign one chore to several children at once (the "Both" option). */
+export async function assignChoreToMembers(
+  choreId: string,
+  memberIds: string[],
+  assignedBy: string,
+  recurrenceDow: number | null = null
+): Promise<void> {
+  if (memberIds.length === 0) return
+  const { error } = await supabase.from('chore_assignments').insert(
+    memberIds.map((memberId) => ({
+      chore_id: choreId,
+      assigned_to: memberId,
+      assigned_by: assignedBy,
+      status: 'pending',
+      is_template: true,
+      is_active: true,
+      recurrence_dow: recurrenceDow,
+    }))
+  )
   if (error) throw error
 }
 
@@ -473,14 +572,21 @@ export async function getFamilyProgress(children: FamilyMember[]): Promise<Famil
   }
 }
 
-/** Family chore library (only family-scoped chores are assignable under RLS). */
-export async function getFamilyChores(familyId: string): Promise<Chore[]> {
-  const { data, error } = await supabase
+/**
+ * Family chore library (only family-scoped chores are assignable under RLS).
+ * Archived chores are hidden unless explicitly asked for.
+ */
+export async function getFamilyChores(
+  familyId: string,
+  includeArchived = false
+): Promise<Chore[]> {
+  let query = supabase
     .from('chores')
     .select('*')
     .eq('family_id', familyId)
     .eq('is_template', false)
-    .order('title')
+  if (!includeArchived) query = query.eq('is_archived', false)
+  const { data, error } = await query.order('title')
   if (error) throw error
   return data ?? []
 }
@@ -490,20 +596,27 @@ export interface ChoreInput {
   value: number
   frequency: Frequency
   category: string
+  description?: string | null
   icon?: string | null
 }
 
-/** Create a custom family chore (added to the family's own library). */
+/**
+ * Create a custom family chore (added to the family's own library).
+ * is_custom marks it as parent-authored so the UI can distinguish it from the
+ * seeded master library.
+ */
 export async function createChore(familyId: string, input: ChoreInput): Promise<Chore> {
   const { data, error } = await supabase
     .from('chores')
     .insert({
       family_id: familyId,
       is_template: false,
+      is_custom: true,
       title: input.title,
       value: input.value,
       frequency: input.frequency,
       category: input.category,
+      description: input.description ?? null,
       icon: input.icon ?? null,
     })
     .select()
@@ -517,9 +630,56 @@ export async function updateChore(choreId: string, input: Partial<ChoreInput>): 
   if (error) throw error
 }
 
-/** Delete a family chore. Fails if it's still referenced by an assignment. */
+export interface ChoreUsage {
+  /** Active + paused roster entries pointing at this chore. */
+  roster: number
+  /** Generated instances — the child's earned/missed history. */
+  history: number
+}
+
+/** How much a chore is referenced. Both counts must be 0 for a hard delete. */
+export async function getChoreUsage(choreId: string): Promise<ChoreUsage> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('id, is_template')
+    .eq('chore_id', choreId)
+  if (error) throw error
+  const rows = data ?? []
+  return {
+    roster: rows.filter((r) => r.is_template).length,
+    history: rows.filter((r) => !r.is_template).length,
+  }
+}
+
+/**
+ * Hard-delete a family chore. The chore_id FK is ON DELETE RESTRICT, so this
+ * fails rather than cascading away a child's earned-chore history — archive
+ * instead when a chore has been used.
+ */
 export async function deleteChore(choreId: string): Promise<void> {
   const { error } = await supabase.from('chores').delete().eq('id', choreId)
+  if (error) throw error
+}
+
+/**
+ * Archive a chore: hide it from the library and deactivate every roster entry
+ * that uses it, so no new instances generate. All history stays intact.
+ */
+export async function archiveChore(choreId: string): Promise<void> {
+  const { error: rosterErr } = await supabase
+    .from('chore_assignments')
+    .update({ is_active: false })
+    .eq('chore_id', choreId)
+    .eq('is_template', true)
+  if (rosterErr) throw rosterErr
+
+  const { error } = await supabase.from('chores').update({ is_archived: true }).eq('id', choreId)
+  if (error) throw error
+}
+
+/** Restore an archived chore to the library. Roster entries stay paused. */
+export async function unarchiveChore(choreId: string): Promise<void> {
+  const { error } = await supabase.from('chores').update({ is_archived: false }).eq('id', choreId)
   if (error) throw error
 }
 
@@ -541,7 +701,35 @@ export async function getRoster(): Promise<RosterEntry[]> {
   return (data ?? []) as unknown as RosterEntry[]
 }
 
-/** Remove a roster template. Existing generated instances remain (template_id -> null). */
+/**
+ * Pause or resume a roster entry. Paused entries stop generating new instances
+ * but keep every instance they already produced — this is the normal way to
+ * take a chore off a child's list.
+ */
+export async function setRosterEntryActive(templateId: string, isActive: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('chore_assignments')
+    .update({ is_active: isActive })
+    .eq('id', templateId)
+    .eq('is_template', true)
+  if (error) throw error
+}
+
+/** Change which day of the week a weekly roster entry falls due. */
+export async function setRosterEntryDay(templateId: string, dow: number | null): Promise<void> {
+  const { error } = await supabase
+    .from('chore_assignments')
+    .update({ recurrence_dow: dow })
+    .eq('id', templateId)
+    .eq('is_template', true)
+  if (error) throw error
+}
+
+/**
+ * Permanently remove a roster template. Generated instances survive with
+ * template_id set to null (the self-FK is ON DELETE SET NULL), so history is
+ * kept — but the entry can't be resumed. Prefer setRosterEntryActive(false).
+ */
 export async function removeRosterEntry(templateId: string): Promise<void> {
   const { error } = await supabase
     .from('chore_assignments')
@@ -549,4 +737,26 @@ export async function removeRosterEntry(templateId: string): Promise<void> {
     .eq('id', templateId)
     .eq('is_template', true)
   if (error) throw error
+}
+
+export interface MissedInstance extends AssignmentWithChore {
+  member: PendingMember | null
+}
+
+/** Expired (missed) instances across the family, most recent first. */
+export async function getMissedInstances(sinceDays = 14): Promise<MissedInstance[]> {
+  const since = new Date()
+  since.setDate(since.getDate() - sinceDays)
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select(
+      '*, chore:chores(*), member:family_members!chore_assignments_assigned_to_fkey(id,display_name,avatar_url)'
+    )
+    .eq('is_template', false)
+    .eq('status', 'expired')
+    .gte('due_date', since.toISOString())
+    .order('due_date', { ascending: false })
+    .limit(100)
+  if (error) throw error
+  return (data ?? []) as unknown as MissedInstance[]
 }

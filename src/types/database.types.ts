@@ -25,8 +25,10 @@ export type Database = {
           created_at: string | null
           due_date: string | null
           id: string
+          is_active: boolean
           is_template: boolean
           notes: string | null
+          recurrence_dow: number | null
           status: string | null
           template_id: string | null
         }
@@ -40,8 +42,10 @@ export type Database = {
           created_at?: string | null
           due_date?: string | null
           id?: string
+          is_active?: boolean
           is_template?: boolean
           notes?: string | null
+          recurrence_dow?: number | null
           status?: string | null
           template_id?: string | null
         }
@@ -55,8 +59,10 @@ export type Database = {
           created_at?: string | null
           due_date?: string | null
           id?: string
+          is_active?: boolean
           is_template?: boolean
           notes?: string | null
+          recurrence_dow?: number | null
           status?: string | null
           template_id?: string | null
         }
@@ -101,6 +107,8 @@ export type Database = {
           frequency: string | null
           icon: string | null
           id: string
+          is_archived: boolean
+          is_custom: boolean
           is_template: boolean | null
           title: string
           updated_at: string | null
@@ -115,6 +123,8 @@ export type Database = {
           frequency?: string | null
           icon?: string | null
           id?: string
+          is_archived?: boolean
+          is_custom?: boolean
           is_template?: boolean | null
           title: string
           updated_at?: string | null
@@ -129,6 +139,8 @@ export type Database = {
           frequency?: string | null
           icon?: string | null
           id?: string
+          is_archived?: boolean
+          is_custom?: boolean
           is_template?: boolean | null
           title?: string
           updated_at?: string | null

@@ -9,7 +9,8 @@ Real members in Supabase `family_members` (family id eaa7a6df-...):
 - Gary Hughey: role [admin, parent]
 - Eve Hughey: role [parent]
 - "POCO": role [child]
-No Joshua/Marie yet — members are managed in-app via parent Settings.
+- "Cuddles": role [child]
+Members are managed in-app via parent Settings.
 
 ## Kiosk session model
 The kiosk runs one shared Supabase session via a DEDICATED account
@@ -60,6 +61,20 @@ Lucide React ONLY. Never emoji as icons.
 - PINs live in families.member_pins (jsonb, keyed by family_members.id).
   Column added via migration on approval. All members are PIN-gated.
 - chores/expenses use is_template + null family_id for template rows.
+- chore_assignments.is_active — pause/resume a roster entry. The generator only
+  reads active templates. Pausing is the normal way to take a chore off a child;
+  deleting the template row is permanent and can't be resumed.
+- chore_assignments.recurrence_dow — smallint 0=Sun..6=Sat, pins a weekly chore
+  to a weekday. Null = due end of week. Only meaningful on template rows.
+- status allows 'expired'. Missed chores do NOT carry over: the sweep in
+  expireLapsedAssignments() flips lapsed pending/in_progress instances to
+  'expired' and a fresh instance generates next period. 'rejected' is left alone
+  so the child still sees the parent's note.
+- chores.is_custom — true means a parent authored it in-app; the 126 seeded rows
+  are false. chores.is_archived — hidden from the library, roster entries paused.
+- chore_assignments.chore_id FK is ON DELETE **RESTRICT**. Never widen it back to
+  CASCADE: deleting a library chore would wipe the child's earned-chore history.
+  Archive chores that have been used; hard delete only works when unused.
 
 ## Kiosk rules
 - All touch targets minimum 64px

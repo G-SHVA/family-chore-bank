@@ -3,6 +3,7 @@ import { Loader2, Check, X, Clock, CheckCircle2, Flame } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
+  generateDailyAssignments,
   getPendingApprovals,
   approveChore,
   rejectChore,
@@ -46,6 +47,9 @@ export default function ParentDashboard() {
     if (!familyId) return
     try {
       setError(null)
+      // Self-healing: expire lapsed chores and create this period's instances,
+      // so the roster stays live even if no child has opened the app today.
+      await generateDailyAssignments()
       const members = await getActiveMembers(familyId)
       const children = members.filter(isChild)
       const [pa, sums, ch, ex, recent] = await Promise.all([
