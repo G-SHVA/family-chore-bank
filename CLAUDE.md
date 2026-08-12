@@ -86,6 +86,23 @@ Lucide React ONLY. Never emoji as icons.
 - Project PAUSES after 1 week of inactivity. Keep the family using it
   daily, or add a scheduled health-check ping. Revisit before beta.
 
+## V2 Architecture Notes
+
+### CHORE GENERATION — SCALE CONSIDERATION
+Current MVP uses pre-generation: generateDailyAssignments() creates
+chore_assignment instance rows each day from roster templates. Works fine for
+single family beta.
+
+For V2 SaaS launch, migrate to on-demand generation:
+- Remove scheduled daily generation
+- Query roster templates directly on child dashboard load
+- Only create chore_assignment rows on completion (mark complete)
+- Weekly/monthly chores can remain pre-generated (low volume)
+- Parent dashboard shows roster schedule, not pending instances
+- Result: zero DB writes for chores that are never touched
+
+This change reduces DB row generation by ~90% at scale.
+
 ## Never do
 - rm -rf without confirmation
 - Drop or truncate tables
