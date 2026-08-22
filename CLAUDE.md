@@ -93,6 +93,29 @@ Current MVP uses pre-generation: generateDailyAssignments() creates
 chore_assignment instance rows each day from roster templates. Works fine for
 single family beta.
 
+MEASURED FOOTPRINT (2026-08-22, after ~2 weeks of real family use):
+- chore_assignments: 855 rows, 360 kB total (144 kB table + 176 kB indexes)
+- entire public schema (ALL family data): 2.4 MB
+- whole database: 14 MB
+- growth rate: ~51 instance rows/day for 2 kids / 81 active templates,
+  roughly 18,600 rows/year for this one family
+
+The ~30 MB shown in the Supabase dashboard is PLATFORM BASELINE — system
+catalogs, extensions, auth, realtime, storage. A brand-new empty project
+weighs about that. It is NOT our data, and deleting chore rows will not
+move that number. Do not treat dashboard size as a data-growth signal.
+
+So on-demand generation is a V2 SaaS-scale priority, NOT a beta emergency.
+At one family the row count is harmless; at N families it is the difference
+between a small table and a very large one.
+
+BUT pre-generation already bit us once, and not through disk: instance rows
+accumulated past a capped read query and pushed every live chore out of the
+fetch window, so both kids saw empty chore lists (fixed 2026-08-22 — see
+getMemberInstances). Any capped query over a growing table has this failure
+mode. Sort so the rows you need survive the cap, and derive lifetime totals
+from server-side aggregates rather than a capped fetch.
+
 For V2 SaaS launch, migrate to on-demand generation:
 - Remove scheduled daily generation
 - Query roster templates directly on child dashboard load
@@ -102,6 +125,21 @@ For V2 SaaS launch, migrate to on-demand generation:
 - Result: zero DB writes for chores that are never touched
 
 This change reduces DB row generation by ~90% at scale.
+
+### MONTHLY MAINTENANCE — deleteExpiredAssignments()
+src/features/chores/choreService.ts exports deleteExpiredAssignments(days=30).
+Run it manually about once a month; nothing schedules it.
+
+It deletes ONLY instance rows (is_template = false) with status 'expired' or
+'rejected' whose due_date is older than the cutoff. It never touches:
+- 'approved' rows — the financial history behind every balance, and what the
+  balance triggers operate on. Keep forever.
+- 'rejected' rows inside the 30-day window — kids still need to read the
+  parent's note on why a chore wasn't approved.
+- template rows — deleting one takes the child off the chore entirely.
+
+As of 2026-08-22 it would delete 0 rows (all data is younger than 30 days).
+This is housekeeping, not a space fix — see the footprint numbers above.
 
 ## Never do
 - rm -rf without confirmation

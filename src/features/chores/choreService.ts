@@ -818,3 +818,53 @@ export async function getMissedInstances(sinceDays = 14): Promise<MissedInstance
   if (error) throw error
   return (data ?? []) as unknown as MissedInstance[]
 }
+
+/* ------------------------------------------------------------------ *
+ * Maintenance
+ * ------------------------------------------------------------------ */
+
+/** What a cleanup pass removed. */
+export interface CleanupResult {
+  deleted: number
+  cutoff: string
+}
+
+/**
+ * Deletes stale chore_assignment INSTANCE rows to keep the table from growing
+ * without bound. Intended to be run manually about once a month — there is no
+ * scheduler wired up.
+ *
+ * Deletes only rows that are all of:
+ *   - is_template = false   (roster templates are never touched)
+ *   - status in ('expired', 'rejected')
+ *   - due_date older than `olderThanDays` (default 30)
+ *
+ * Deliberately NOT deleted:
+ *   - 'approved' rows, ever. They are the financial history behind every
+ *     balance and every earnings figure, and balances are maintained by DB
+ *     triggers against these rows.
+ *   - 'rejected' rows inside the window, so a child can still read the
+ *     parent's note explaining why something wasn't approved.
+ *   - 'pending' / 'in_progress' / 'completed' rows, which are all live.
+ *   - Template rows, which would take the child off the chore entirely.
+ *
+ * Note this is a housekeeping measure, not a space fix: the whole public
+ * schema is a couple of megabytes. See the V2 note in CLAUDE.md — the real
+ * scale answer is on-demand generation, not deleting rows after the fact.
+ */
+export async function deleteExpiredAssignments(olderThanDays = 30): Promise<CleanupResult> {
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - olderThanDays)
+  const cutoffIso = cutoff.toISOString()
+
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .delete()
+    .eq('is_template', false)
+    .in('status', ['expired', 'rejected'])
+    .lt('due_date', cutoffIso)
+    .select('id')
+  if (error) throw error
+
+  return { deleted: data?.length ?? 0, cutoff: cutoffIso }
+}
