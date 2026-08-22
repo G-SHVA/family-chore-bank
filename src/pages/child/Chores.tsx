@@ -68,7 +68,7 @@ export default function ChildChores() {
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center py-24">
-        <Loader2 className="h-10 w-10 animate-spin text-gold" />
+        <Loader2 className="h-10 w-10 animate-spin text-antique" />
       </div>
     )
   }
@@ -92,14 +92,14 @@ export default function ChildChores() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-4 flex flex-wrap gap-1 rounded-input bg-card p-1">
+      <div className="mb-4 flex flex-wrap gap-1 rounded-input border border-line bg-deep p-1">
         {FILTERS.map((f) => (
           <button
             key={f.key}
             onClick={() => setFilter(f.key)}
             className={cn(
-              'flex-1 rounded-md px-4 py-3 text-sm font-semibold',
-              filter === f.key ? 'bg-gold text-bg' : 'text-text-muted'
+              'label-caps flex-1 rounded-input px-4 py-3 text-[11px]',
+              filter === f.key ? 'bg-wash text-antique' : 'text-text-muted'
             )}
           >
             {f.label}

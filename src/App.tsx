@@ -18,7 +18,7 @@ function AppGate() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-bg">
-        <Loader2 className="h-12 w-12 animate-spin text-gold" />
+        <Loader2 className="h-12 w-12 animate-spin text-antique" />
       </div>
     )
   }

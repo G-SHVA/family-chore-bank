@@ -68,7 +68,7 @@ export default function ChildDashboard() {
   if (loading) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24">
-        <Loader2 className="h-10 w-10 animate-spin text-gold" />
+        <Loader2 className="h-10 w-10 animate-spin text-antique" />
         <p className="text-text-muted">Loading your bank…</p>
       </div>
     )
@@ -93,12 +93,12 @@ export default function ChildDashboard() {
     <div className="mx-auto flex max-w-5xl flex-col gap-6 lg:flex-row">
       {/* Left column: balance + stats */}
       <div className="flex flex-col gap-4 lg:w-2/5">
-        <Card className="bg-gradient-to-br from-card to-surface">
-          <div className="text-sm text-text-muted">Current balance</div>
+        <Card>
+          <div className="label-caps text-[11px] text-text-muted">Current balance</div>
           <BalanceDisplay
             amount={data.balance}
             currency={currency}
-            className="mt-1 block text-[56px] font-extrabold leading-none text-green"
+            className="mt-2 block text-[56px] leading-none text-gold"
           />
           <div className="mt-4 flex items-center gap-4 text-sm">
             <span className="text-text-muted">
@@ -108,7 +108,7 @@ export default function ChildDashboard() {
               </span>
             </span>
             {data.currentStreak > 0 && (
-              <span className="flex items-center gap-1 font-semibold text-gold">
+              <span className="label-caps flex items-center gap-1 text-[11px] text-antique">
                 <Flame className="h-4 w-4" /> {data.currentStreak} day streak
               </span>
             )}
@@ -117,7 +117,7 @@ export default function ChildDashboard() {
 
         <div className="grid grid-cols-2 gap-4">
           <StatCard label="Completed this week" value={data.completedThisWeek} />
-          <StatCard label="Pending approval" value={data.pendingApproval} accent="gold" />
+          <StatCard label="Pending approval" value={data.pendingApproval} accent="antique" />
           <StatCard label="Due today" value={data.dueToday} />
           <StatCard label="Completion rate" value={`${data.completionRate}%`} accent="green" />
         </div>
@@ -126,15 +126,15 @@ export default function ChildDashboard() {
       {/* Right column: chores */}
       <div className="flex flex-col gap-4 lg:w-3/5">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold text-text">My Chores</h2>
-          <div className="flex gap-1 rounded-input bg-card p-1">
+          <h2 className="text-2xl text-text">My Chores</h2>
+          <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
             {(['all', 'todo', 'pending'] as Filter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
                 className={cn(
-                  'rounded-md px-4 py-2 text-sm font-semibold capitalize',
-                  filter === f ? 'bg-gold text-bg' : 'text-text-muted'
+                  'label-caps rounded-input px-4 py-2 text-[11px]',
+                  filter === f ? 'bg-wash text-antique' : 'text-text-muted'
                 )}
               >
                 {f === 'todo' ? 'To Do' : f}
@@ -175,19 +175,19 @@ function StatCard({
 }: {
   label: string
   value: string | number
-  accent?: 'gold' | 'green'
+  accent?: 'antique' | 'green'
 }) {
   return (
     <Card className="flex flex-col gap-1">
       <span
         className={cn(
-          'text-3xl font-extrabold',
-          accent === 'gold' ? 'text-gold' : accent === 'green' ? 'text-green' : 'text-text'
+          'display text-3xl',
+          accent === 'antique' ? 'text-antique' : accent === 'green' ? 'text-green' : 'text-text'
         )}
       >
         {value}
       </span>
-      <span className="text-xs uppercase tracking-wide text-text-muted">{label}</span>
+      <span className="label-caps text-[10px] text-text-muted">{label}</span>
     </Card>
   )
 }

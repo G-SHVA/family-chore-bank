@@ -120,15 +120,15 @@ export function PinPad({
       <div className="flex flex-col items-center gap-5">
         <div className="flex flex-col items-center gap-3">
           {avatarUrl ? (
-            <img src={avatarUrl} alt={memberName} className="h-20 w-20 rounded-full object-cover" />
+            <img src={avatarUrl} alt={memberName} className="h-20 w-20 rounded-full border border-antique/40 object-cover" />
           ) : (
-            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gold/20 text-2xl font-bold text-gold">
+            <div className="display flex h-20 w-20 items-center justify-center rounded-full border border-antique/40 bg-wash text-3xl text-antique">
               {initials(memberName)}
             </div>
           )}
           <div className="text-center">
-            <h2 className="text-xl font-bold text-text">{memberName}</h2>
-            <p className={cn('text-sm', error ? 'text-danger' : 'text-text-muted')}>
+            <h2 className="text-2xl text-text">{memberName}</h2>
+            <p className={cn('label-caps text-[11px]', error ? 'text-danger' : 'text-text-muted')}>
               {error ?? subtitle}
             </p>
           </div>
@@ -143,7 +143,7 @@ export function PinPad({
               key={i}
               className={cn(
                 'h-4 w-4 rounded-full border-2 transition-colors',
-                i < pin.length ? 'border-gold bg-gold' : 'border-white/30 bg-transparent'
+                i < pin.length ? 'border-antique bg-antique' : 'border-antique/30 bg-transparent'
               )}
             />
           ))}
@@ -178,9 +178,9 @@ function PadButton({
     <button
       onClick={onClick}
       className={cn(
-        'flex h-16 w-16 items-center justify-center rounded-full bg-card text-2xl font-semibold text-text',
-        'transition-[transform,background-color] duration-100 active:scale-95 active:bg-white/10',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/60'
+        'flex h-16 w-16 items-center justify-center rounded-input border border-line bg-deep text-2xl font-medium text-text',
+        'transition-[transform,background-color,border-color] duration-100 active:scale-95 active:border-antique active:bg-wash',
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-antique'
       )}
       {...props}
     >

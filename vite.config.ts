@@ -20,8 +20,8 @@ export default defineConfig({
         short_name: 'ChoreBank',
         display: 'standalone',
         orientation: 'any',
-        theme_color: '#181818',
-        background_color: '#181818',
+        theme_color: '#1C1C1E',
+        background_color: '#1C1C1E',
         start_url: '/',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },

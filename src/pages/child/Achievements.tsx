@@ -84,21 +84,21 @@ export default function ChildAchievements() {
   if (loading || !overview) {
     return (
       <div className="flex flex-1 items-center justify-center py-24">
-        <Loader2 className="h-10 w-10 animate-spin text-gold" />
+        <Loader2 className="h-10 w-10 animate-spin text-antique" />
       </div>
     )
   }
 
   return (
     <div className="mx-auto max-w-4xl">
-      <div className="mb-5 flex flex-wrap gap-1 rounded-input bg-card p-1">
+      <div className="mb-5 flex flex-wrap gap-1 rounded-input border border-line bg-deep p-1">
         {TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
             className={cn(
-              'flex-1 rounded-md px-4 py-3 text-sm font-semibold',
-              tab === t.key ? 'bg-gold text-bg' : 'text-text-muted'
+              'label-caps flex-1 rounded-input px-4 py-3 text-[11px]',
+              tab === t.key ? 'bg-wash text-antique' : 'text-text-muted'
             )}
           >
             {t.label}
@@ -110,25 +110,25 @@ export default function ChildAchievements() {
         <div className="flex flex-col gap-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Card className="flex items-center gap-4">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gold/15 text-gold">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full border border-antique/40 bg-wash text-antique">
                 <Flame className="h-7 w-7" />
               </div>
               <div>
-                <div className="text-3xl font-extrabold">{overview.currentStreak}</div>
-                <div className="text-sm text-text-muted">
+                <div className="display text-3xl text-antique">{overview.currentStreak}</div>
+                <div className="label-caps text-[10px] text-text-muted">
                   Day streak · best {overview.longestStreak}
                 </div>
               </div>
             </Card>
             <Card className="flex items-center gap-4">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green/15 text-green">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full border border-green/40 bg-green/10 text-green">
                 <TrendingUp className="h-7 w-7" />
               </div>
               <div>
-                <div className="text-3xl font-extrabold text-green">
+                <div className="display text-3xl text-green">
                   {formatCurrency(overview.totalEarned, currency)}
                 </div>
-                <div className="text-sm text-text-muted">Total earned</div>
+                <div className="label-caps text-[10px] text-text-muted">Total earned</div>
               </div>
             </Card>
           </div>
@@ -143,19 +143,19 @@ export default function ChildAchievements() {
           </div>
 
           <Card>
-            <div className="mb-3 font-bold">Last 7 days</div>
+            <h3 className="mb-3 text-xl">Last 7 days</h3>
             <div className="h-40">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={overview.sevenDay}>
                   <XAxis
                     dataKey="label"
-                    tick={{ fill: '#A0A0A0', fontSize: 12 }}
+                    tick={{ fill: '#8A8680', fontSize: 11 }}
                     axisLine={false}
                     tickLine={false}
                   />
-                  <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                  <Bar dataKey="count" radius={[2, 2, 0, 0]}>
                     {overview.sevenDay.map((d, i) => (
-                      <Cell key={i} fill={d.count > 0 ? '#E6B800' : '#2A2A2A'} />
+                      <Cell key={i} fill={d.count > 0 ? '#E0BC84' : '#262628'} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -180,12 +180,12 @@ export default function ChildAchievements() {
               <Card key={m.id} className="flex items-center gap-4">
                 <Ring pct={m.progressPct} done={!!m.completedAt} />
                 <div className="min-w-0">
-                  <div className="truncate font-bold">{m.title}</div>
+                  <div className="display truncate text-lg">{m.title}</div>
                   <div className="text-sm text-text-muted">
                     {formatCurrency(m.currentAmount, currency)} /{' '}
                     {formatCurrency(m.target_amount, currency)}
                   </div>
-                  {m.completedAt && <div className="text-sm font-semibold text-green">Unlocked!</div>}
+                  {m.completedAt && <div className="label-caps text-[10px] text-green">Unlocked!</div>}
                 </div>
               </Card>
             ))
@@ -208,17 +208,17 @@ export default function ChildAchievements() {
               const requested = redeemed.has(r.id)
               return (
                 <Card key={r.id} className={cn(!r.canAfford && 'opacity-60')}>
-                  <div className="flex items-center gap-2 font-bold">
-                    <Gift className="h-5 w-5 text-gold" /> {r.title}
+                  <div className="display flex items-center gap-2 text-lg">
+                    <Gift className="h-5 w-5 text-antique" /> {r.title}
                   </div>
-                  <div className="mt-1 text-2xl font-extrabold text-gold">
+                  <div className="display mt-1 text-2xl text-antique">
                     {formatCurrency(r.cost, currency)}
                   </div>
                   <div className="mt-3">
                     {requested ? (
-                      <div className="text-center text-sm font-semibold text-green">Sent to parents!</div>
+                      <div className="label-caps text-center text-[10px] text-green">Sent to parents!</div>
                     ) : r.canAfford ? (
-                      <Button fullWidth onClick={() => handleRedeem(r.id)}>
+                      <Button variant="accent" fullWidth onClick={() => handleRedeem(r.id)}>
                         Request
                       </Button>
                     ) : (
@@ -238,10 +238,10 @@ export default function ChildAchievements() {
         <div className="flex flex-col gap-4">
           <Card className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Users className="h-6 w-6 text-gold" />
-              <span className="font-bold">Family total</span>
+              <Users className="h-6 w-6 text-antique" />
+              <span className="label-caps text-xs">Family total</span>
             </div>
-            <span className="text-2xl font-extrabold text-green">
+            <span className="display text-2xl text-green">
               {formatCurrency(familyProgress.familyTotalBalance, currency)}
             </span>
           </Card>
@@ -249,17 +249,17 @@ export default function ChildAchievements() {
             {familyProgress.children.map((c) => (
               <Card key={c.member.id}>
                 <div className="flex items-center justify-between">
-                  <span className="font-bold">{c.member.display_name}</span>
+                  <span className="display text-lg">{c.member.display_name}</span>
                   {c.currentStreak > 0 && (
-                    <span className="flex items-center gap-1 text-sm text-gold">
+                    <span className="label-caps flex items-center gap-1 text-[11px] text-antique">
                       <Flame className="h-4 w-4" /> {c.currentStreak}d
                     </span>
                   )}
                 </div>
-                <div className="mt-2 text-2xl font-extrabold text-green">
+                <div className="display mt-2 text-2xl text-green">
                   {formatCurrency(c.member.balance ?? 0, currency)}
                 </div>
-                <div className="text-sm text-text-muted">
+                <div className="label-caps text-[10px] text-text-muted">
                   This week {formatCurrency(c.weeklyEarnings, currency)}
                 </div>
               </Card>
@@ -274,8 +274,8 @@ export default function ChildAchievements() {
 function StatBox({ label, value }: { label: string; value: string | number }) {
   return (
     <Card className="flex flex-col gap-1">
-      <span className="text-2xl font-extrabold">{value}</span>
-      <span className="text-xs uppercase tracking-wide text-text-muted">{label}</span>
+      <span className="display text-2xl">{value}</span>
+      <span className="label-caps text-[10px] text-text-muted">{label}</span>
     </Card>
   )
 }
@@ -286,20 +286,20 @@ function Ring({ pct, done }: { pct: number; done: boolean }) {
   const offset = c - (pct / 100) * c
   return (
     <svg width="64" height="64" viewBox="0 0 64 64" className="shrink-0">
-      <circle cx="32" cy="32" r={r} fill="none" stroke="#2A2A2A" strokeWidth="6" />
+      <circle cx="32" cy="32" r={r} fill="none" stroke="#262628" strokeWidth="4" />
       <circle
         cx="32"
         cy="32"
         r={r}
         fill="none"
-        stroke={done ? '#42B883' : '#E6B800'}
-        strokeWidth="6"
-        strokeLinecap="round"
+        stroke={done ? '#4A9B6F' : '#E0BC84'}
+        strokeWidth="4"
+        strokeLinecap="butt"
         strokeDasharray={c}
         strokeDashoffset={offset}
         transform="rotate(-90 32 32)"
       />
-      <text x="32" y="37" textAnchor="middle" className="fill-text text-[14px] font-bold">
+      <text x="32" y="37" textAnchor="middle" className="fill-text text-[13px] font-medium">
         {pct}%
       </text>
     </svg>

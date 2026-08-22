@@ -41,20 +41,20 @@ export default function Login() {
   }
 
   const inputClass =
-    'w-full rounded-input border border-white/10 bg-card px-4 py-4 text-lg text-text placeholder:text-text-muted focus:border-gold focus:outline-none'
+    'w-full rounded-input border border-line bg-deep px-4 py-4 text-lg text-text placeholder:text-text-muted focus:border-antique focus:outline-none'
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-bg p-6">
       <div className="w-full max-w-md">
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
+        <div className="spine mb-8 flex flex-col items-center gap-3 pb-8 text-center">
           <img src="/logo.png" alt="Family Chore Bank" className="h-[100px] w-[100px]" />
-          <h1 className="text-3xl font-extrabold text-gold">Family Chore Bank</h1>
-          <p className="text-text-muted">Earn it. Save it. Own it.</p>
+          <h1 className="text-4xl text-antique">Family Chore Bank</h1>
+          <p className="label-caps text-[11px] text-text-muted">Earn it. Save it. Own it.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4 rounded-card bg-surface p-6">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4 rounded-card border border-line bg-card p-6">
           <div>
-            <label className="mb-1 block text-sm text-text-muted">Email</label>
+            <label className="label-caps mb-2 block text-[11px] text-text-muted">Email</label>
             <input
               type="email"
               autoComplete="username"
@@ -65,7 +65,7 @@ export default function Login() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-text-muted">Password</label>
+            <label className="label-caps mb-2 block text-[11px] text-text-muted">Password</label>
             <input
               type="password"
               autoComplete="current-password"
@@ -77,10 +77,10 @@ export default function Login() {
           </div>
 
           {error && (
-            <div className="rounded-input bg-danger/10 px-4 py-3 text-sm text-danger">{error}</div>
+            <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">{error}</div>
           )}
           {notice && (
-            <div className="rounded-input bg-green/10 px-4 py-3 text-sm text-green">{notice}</div>
+            <div className="rounded-input border border-green/30 bg-green/10 px-4 py-3 text-sm text-green">{notice}</div>
           )}
 
           <Button type="submit" size="xl" fullWidth disabled={busy || !email || !password}>
@@ -91,13 +91,13 @@ export default function Login() {
             type="button"
             onClick={handleForgot}
             disabled={resetting}
-            className="mx-auto text-sm text-text-muted underline-offset-2 hover:text-text hover:underline disabled:opacity-50"
+            className="label-caps mx-auto text-[11px] text-text-muted underline-offset-4 hover:text-antique hover:underline disabled:opacity-50"
           >
             {resetting ? 'Sending…' : 'Forgot password?'}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-xs text-text-muted">{APP_VERSION}</p>
+        <p className="label-caps mt-6 text-center text-[10px] text-text-muted">{APP_VERSION}</p>
       </div>
     </div>
   )

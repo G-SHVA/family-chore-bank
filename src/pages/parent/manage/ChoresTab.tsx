@@ -46,7 +46,7 @@ import { cn, formatCurrency } from '@/lib/utils'
 const WEEKLY_MULTIPLIER: Record<string, number> = { daily: 7, weekly: 1, monthly: 0.25, once: 0 }
 
 const inputClass =
-  'w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none'
+  'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
 
 export default function ChoresTab() {
   const { family, members, activeMember } = useAuth()
@@ -131,7 +131,7 @@ export default function ChoresTab() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-8 w-8 animate-spin text-gold" />
+        <Loader2 className="h-8 w-8 animate-spin text-antique" />
       </div>
     )
   }
@@ -165,7 +165,7 @@ export default function ChoresTab() {
 
       {/* Current roster */}
       <section>
-        <h2 className="mb-3 text-xl font-bold">Current roster</h2>
+        <h2 className="mb-3 text-2xl">Current roster</h2>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {children.map((child) => (
             <RosterCard
@@ -199,7 +199,7 @@ export default function ChoresTab() {
       {/* Missed chores */}
       {missed.length > 0 && (
         <section>
-          <h2 className="mb-3 text-xl font-bold">Missed chores (last 14 days)</h2>
+          <h2 className="mb-3 text-2xl">Missed chores (last 14 days)</h2>
           <Card className="flex flex-col gap-2">
             {missed.slice(0, 12).map((m) => (
               <div
@@ -213,7 +213,7 @@ export default function ChoresTab() {
                     {m.due_date ? new Date(m.due_date).toLocaleDateString() : 'no due date'}
                   </div>
                 </div>
-                <span className="shrink-0 rounded-full bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                <span className="shrink-0 rounded-input border border-line px-3 py-1 label-caps text-[10px] text-text-muted">
                   Expired
                 </span>
               </div>
@@ -230,7 +230,7 @@ export default function ChoresTab() {
       {/* Library */}
       <section>
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-xl font-bold">Chore library</h2>
+          <h2 className="text-2xl">Chore library</h2>
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-5 w-5" /> Create Chore
           </Button>
@@ -242,7 +242,7 @@ export default function ChoresTab() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search chores…"
-              className="w-full rounded-input border border-white/10 bg-card py-3 pl-11 pr-4 text-text focus:border-gold focus:outline-none"
+              className="w-full rounded-input border border-line bg-deep py-3 pl-11 pr-4 text-text focus:border-antique focus:outline-none"
             />
           </div>
           {archivedCount > 0 && (
@@ -264,17 +264,17 @@ export default function ChoresTab() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold">{c.title}</span>
                       {c.is_custom && (
-                        <span className="rounded-full bg-gold/15 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-gold">
+                        <span className="label-caps rounded-input border border-antique/40 px-2 py-0.5 text-[10px] text-antique">
                           Custom
                         </span>
                       )}
                       {c.is_archived && (
-                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-text-muted">
+                        <span className="rounded-input border border-line px-2 py-0.5 label-caps text-[10px] text-text-muted">
                           Archived
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 text-xs uppercase tracking-wide text-text-muted">
+                    <div className="mt-1 label-caps text-[10px] text-text-muted">
                       {c.category} · {c.frequency}
                     </div>
                     {c.description && (
@@ -284,7 +284,7 @@ export default function ChoresTab() {
                       <p className="mt-1 text-xs text-green">Assigned to {assignedTo.join(', ')}</p>
                     )}
                   </div>
-                  <span className="shrink-0 rounded-full bg-gold/15 px-3 py-1 text-sm font-bold text-gold">
+                  <span className="shrink-0 label-caps rounded-input border border-antique/40 px-3 py-1 text-sm text-antique">
                     {formatCurrency(c.value, currency)}
                   </span>
                 </div>
@@ -307,7 +307,7 @@ export default function ChoresTab() {
                   )}
                   <button
                     onClick={() => setEditing(c)}
-                    className="flex min-h-touch min-w-touch items-center justify-center rounded-input text-text-muted hover:bg-white/5 hover:text-text"
+                    className="flex min-h-touch min-w-touch items-center justify-center rounded-input text-text-muted hover:bg-wash hover:text-text"
                     aria-label={`Edit ${c.title}`}
                   >
                     <Pencil className="h-5 w-5" />
@@ -404,11 +404,11 @@ function Stat({
   return (
     <Card className="flex flex-col gap-1">
       <span
-        className={cn('text-2xl font-extrabold', accent === 'green' ? 'text-green' : 'text-text')}
+        className={cn('display text-2xl', accent === 'green' ? 'text-green' : 'text-text')}
       >
         {value}
       </span>
-      <span className="text-xs uppercase tracking-wide text-text-muted">{label}</span>
+      <span className="label-caps text-[10px] text-text-muted">{label}</span>
     </Card>
   )
 }
@@ -444,8 +444,8 @@ function RosterCard({
   return (
     <Card>
       <div className="mb-3 flex items-baseline justify-between gap-2">
-        <span className="font-bold">{child.display_name}</span>
-        <span className="text-xs uppercase tracking-wide text-text-muted">
+        <span className="display text-lg">{child.display_name}</span>
+        <span className="label-caps text-[10px] text-text-muted">
           {active.length} active
           {entries.length > active.length && ` · ${entries.length - active.length} paused`}
         </span>
@@ -471,12 +471,12 @@ function RosterCard({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-semibold">{e.chore?.title}</span>
                       {e.chore?.is_custom && (
-                        <span className="rounded-full bg-gold/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gold">
+                        <span className="label-caps rounded-input border border-antique/40 px-2 py-0.5 text-[10px] text-antique">
                           Custom
                         </span>
                       )}
                       {!e.is_active && (
-                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-text-muted">
+                        <span className="rounded-input border border-line px-2 py-0.5 label-caps text-[10px] text-text-muted">
                           Paused
                         </span>
                       )}
@@ -493,7 +493,7 @@ function RosterCard({
                       className={cn(
                         'flex min-h-touch min-w-touch items-center justify-center rounded-input',
                         e.is_active
-                          ? 'text-text-muted hover:bg-white/5 hover:text-text'
+                          ? 'text-text-muted hover:bg-wash hover:text-text'
                           : 'text-green hover:bg-green/10'
                       )}
                       aria-label={
@@ -525,7 +525,7 @@ function RosterCard({
                       onChange={(ev) =>
                         onDay(e, ev.target.value === '' ? null : Number(ev.target.value))
                       }
-                      className="min-h-touch flex-1 rounded-input border border-white/10 bg-card px-2 text-sm text-text focus:border-gold focus:outline-none"
+                      className="min-h-touch flex-1 rounded-input border border-line bg-deep px-2 text-sm text-text focus:border-antique focus:outline-none"
                     >
                       <option value="">End of week</option>
                       {DAY_LABELS.map((label, dow) => (
@@ -608,12 +608,12 @@ function ChildPicker({
             }
             className={cn(
               'flex min-h-touch items-center justify-between rounded-input border px-4 text-left',
-              checked ? 'border-gold bg-gold/10 text-text' : 'border-white/10 bg-card text-text',
+              checked ? 'border-antique bg-wash text-text' : 'border-line bg-deep text-text',
               disabled && 'cursor-not-allowed opacity-40'
             )}
           >
             <span className="font-semibold">{c.display_name}</span>
-            <span className="text-xs uppercase tracking-wide text-text-muted">
+            <span className="label-caps text-[10px] text-text-muted">
               {disabled ? 'Already assigned' : checked ? 'Selected' : ''}
             </span>
           </button>
@@ -623,7 +623,7 @@ function ChildPicker({
         <button
           type="button"
           onClick={() => onChange(allSelected ? [] : selectable.map((c) => c.id))}
-          className="min-h-touch rounded-input border border-white/10 bg-card px-4 font-semibold text-gold"
+          className="min-h-touch rounded-input border border-line bg-card px-4 font-semibold text-antique"
         >
           {allSelected ? 'Clear all' : `Both (${selectable.map((c) => c.display_name).join(' + ')})`}
         </button>

@@ -4,6 +4,31 @@
 
 :root {
   color-scheme: dark;
+
+  /* Palette — mirrored in tailwind.config.ts */
+  --color-bg-primary: #1c1c1e;
+  --color-bg-deep: #0d0d0f;
+  --color-bg-card: #1c1c1e;
+  --color-bg-wash: rgba(224, 188, 132, 0.06);
+  --color-gold-primary: #e6b800;
+  --color-gold-antique: #e0bc84;
+  --color-green: #4a9b6f;
+  --color-text-primary: #d4d0c8;
+  --color-text-secondary: #8a8680;
+  --color-border: rgba(224, 188, 132, 0.15);
+  --color-spine: rgba(224, 188, 132, 0.3);
+
+  /* Geometry — parent/admin default: squared. */
+  --radius-card: 0px;
+  --radius-input: 0px;
+}
+
+/* Child views soften slightly but stay restrained. ChildLayout sets
+   data-surface="child" on its root, so every descendant card, button,
+   input and modal picks this up without knowing its own context. */
+[data-surface='child'] {
+  --radius-card: 4px;
+  --radius-input: 4px;
 }
 
 html,
@@ -14,12 +39,50 @@ body,
 
 body {
   margin: 0;
-  background-color: #181818;
-  color: #ffffff;
-  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+}
+
+@layer base {
+  /* Every heading across every page is Cormorant Garamond 600. */
+  h1,
+  h2,
+  h3 {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+}
+
+@layer components {
+  /* Display serif for headings and the large currency figures. */
+  .display {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  /* Inter uppercase — labels, stat captions, category tags, nav, buttons. */
+  .label-caps {
+    font-family: 'Inter', system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+
+  /* Structural spine under headers and nav bars. */
+  .spine {
+    border-bottom: 1px solid var(--color-spine);
+  }
+
+  /* Bottom-docked nav meets content at its top edge. */
+  .spine-top {
+    border-top: 1px solid var(--color-spine);
+  }
 }
 
 /* Kiosk: disable text selection + long-press callouts on touch targets */

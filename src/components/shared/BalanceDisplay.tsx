@@ -27,7 +27,7 @@ export function BalanceDisplay({
   }, [amount])
 
   return (
-    <motion.span className={cn('tabular-nums', className)} aria-label={formatCurrency(amount, currency)}>
+    <motion.span className={cn('display tabular-nums', className)} aria-label={formatCurrency(amount, currency)}>
       {text}
     </motion.span>
   )

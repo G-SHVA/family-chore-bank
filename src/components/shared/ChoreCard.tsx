@@ -62,34 +62,34 @@ export function ChoreCard({ assignment, currency = 'USD', onComplete }: ChoreCar
     <motion.div
       layout
       className={cn(
-        'rounded-card bg-card p-5 border border-white/5',
+        'rounded-card border border-line bg-card p-5',
         flash && 'animate-green-flash'
       )}
     >
       <div className="flex items-start gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-input bg-white/5 text-text-muted">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-input border border-line bg-deep text-antique">
           <Icon className="h-6 w-6" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
-            <h3 className="text-lg font-semibold leading-tight text-text">{chore?.title}</h3>
-            <span className="shrink-0 rounded-full bg-gold/15 px-3 py-1 text-sm font-bold text-gold">
+            <h3 className="text-xl leading-tight text-text">{chore?.title}</h3>
+            <span className="label-caps shrink-0 rounded-input border border-antique/40 px-3 py-1 text-sm text-antique">
               {formatCurrency(chore?.value ?? 0, currency)}
             </span>
           </div>
-          <div className="mt-1 flex items-center gap-2 text-xs uppercase tracking-wide text-text-muted">
+          <div className="label-caps mt-2 flex items-center gap-2 text-[11px] text-text-muted">
             <span>{chore?.category ?? 'chore'}</span>
             {chore?.frequency && <span>· {chore.frequency}</span>}
           </div>
 
           <div className="mt-4">
             {canComplete && (
-              <Button fullWidth size="lg" onClick={handleComplete} disabled={busy}>
+              <Button fullWidth size="lg" variant="primaryList" onClick={handleComplete} disabled={busy}>
                 {busy ? 'Saving…' : 'Mark Complete'}
               </Button>
             )}
             {status === 'completed' && (
-              <StatusPill icon={Clock} className="text-gold">
+              <StatusPill icon={Clock} className="text-antique">
                 Waiting for parent approval
               </StatusPill>
             )}
@@ -109,7 +109,7 @@ export function ChoreCard({ assignment, currency = 'USD', onComplete }: ChoreCar
                   Not approved
                 </StatusPill>
                 {assignment.notes && (
-                  <p className="mt-2 rounded-input bg-danger/10 px-3 py-2 text-sm text-danger">
+                  <p className="mt-2 rounded-input border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
                     {assignment.notes}
                   </p>
                 )}
@@ -134,7 +134,7 @@ function StatusPill({
   return (
     <div
       className={cn(
-        'flex min-h-touch items-center justify-center gap-2 rounded-input bg-white/5 px-4 font-semibold',
+        'label-caps flex min-h-touch items-center justify-center gap-2 rounded-input border border-line bg-deep px-4 text-xs',
         className
       )}
     >

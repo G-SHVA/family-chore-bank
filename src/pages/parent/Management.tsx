@@ -17,16 +17,16 @@ export default function Management() {
   const [tab, setTab] = useState<Tab>('chores')
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-3xl font-bold">Manage</h1>
+      <h1 className="spine pb-4 text-4xl">Manage</h1>
 
-      <div className="flex flex-wrap gap-1 rounded-input bg-card p-1">
+      <div className="flex flex-wrap gap-1 rounded-input border border-line bg-deep p-1">
         {TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
             className={cn(
-              'flex-1 rounded-md px-4 py-3 text-sm font-semibold',
-              tab === t.key ? 'bg-gold text-bg' : 'text-text-muted'
+              'label-caps flex-1 rounded-input px-4 py-3 text-[11px]',
+              tab === t.key ? 'bg-wash text-antique' : 'text-text-muted'
             )}
           >
             {t.label}

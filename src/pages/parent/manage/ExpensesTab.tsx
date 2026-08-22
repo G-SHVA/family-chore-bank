@@ -59,7 +59,7 @@ export default function ExpensesTab() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-8 w-8 animate-spin text-gold" />
+        <Loader2 className="h-8 w-8 animate-spin text-antique" />
       </div>
     )
   }
@@ -76,7 +76,7 @@ export default function ExpensesTab() {
 
       {recent.length > 0 && (
         <section>
-          <h2 className="mb-3 text-xl font-bold">Recent</h2>
+          <h2 className="mb-3 text-2xl">Recent</h2>
           <Card className="flex flex-col gap-2">
             {recent.map((r) => (
               <div key={r.id} className="flex items-center justify-between text-sm">
@@ -97,7 +97,7 @@ export default function ExpensesTab() {
 
       <section>
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-xl font-bold">Expense library</h2>
+          <h2 className="text-2xl">Expense library</h2>
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-5 w-5" /> Create Expense
           </Button>
@@ -108,7 +108,7 @@ export default function ExpensesTab() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search expenses…"
-            className="w-full rounded-input border border-white/10 bg-card py-3 pl-11 pr-4 text-text focus:border-gold focus:outline-none"
+            className="w-full rounded-input border border-line bg-deep py-3 pl-11 pr-4 text-text focus:border-antique focus:outline-none"
           />
         </div>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -117,9 +117,9 @@ export default function ExpensesTab() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="font-semibold">{e.title}</div>
-                  <div className="text-xs uppercase tracking-wide text-text-muted">{e.category}</div>
+                  <div className="label-caps text-[10px] text-text-muted">{e.category}</div>
                 </div>
-                <span className="shrink-0 rounded-full bg-danger/15 px-3 py-1 text-sm font-bold text-danger">
+                <span className="shrink-0 label-caps rounded-input border border-danger/40 px-3 py-1 text-sm text-danger">
                   {formatCurrency(e.amount, currency)}
                 </span>
               </div>
@@ -130,7 +130,7 @@ export default function ExpensesTab() {
                   if (ev.target.value) handleApply(e.id, ev.target.value, e.title)
                   ev.target.value = ''
                 }}
-                className="min-h-touch rounded-input border border-white/10 bg-bg px-3 text-sm text-text focus:border-gold focus:outline-none"
+                className="min-h-touch rounded-input border border-line bg-deep px-3 text-sm text-text focus:border-antique focus:outline-none"
               >
                 <option value="">Apply to…</option>
                 {children.map((ch) => (
@@ -170,7 +170,7 @@ function ExpenseFormModal({
   const [category, setCategory] = useState('personal')
   const [busy, setBusy] = useState(false)
   const inputClass =
-    'w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none'
+    'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
 
   async function submit() {
     if (!title.trim()) return

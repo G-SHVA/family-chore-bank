@@ -53,7 +53,7 @@ export default function MilestonesTab() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-8 w-8 animate-spin text-gold" />
+        <Loader2 className="h-8 w-8 animate-spin text-antique" />
       </div>
     )
   }
@@ -61,7 +61,7 @@ export default function MilestonesTab() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold">Milestones</h2>
+        <h2 className="text-2xl">Milestones</h2>
         <Button onClick={() => setCreating(true)}>
           <Plus className="h-5 w-5" /> Create Milestone
         </Button>
@@ -81,8 +81,8 @@ export default function MilestonesTab() {
           {milestones.map((m) => (
             <Card key={m.id}>
               <div className="flex items-center justify-between">
-                <div className="font-bold">{m.title}</div>
-                <div className="text-sm font-semibold text-gold">
+                <div className="display text-lg">{m.title}</div>
+                <div className="text-sm font-semibold text-antique">
                   {formatCurrency(m.target_amount, currency)}
                 </div>
               </div>
@@ -143,7 +143,7 @@ function ChildProgress({
       </div>
       <div className="h-2.5 overflow-hidden rounded-full bg-bg">
         <div
-          className={cn('h-full rounded-full', pct >= 100 ? 'bg-green' : 'bg-gold')}
+          className={cn('h-full rounded-full', pct >= 100 ? 'bg-green' : 'bg-antique')}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -163,7 +163,7 @@ function MilestoneFormModal({
   const [badge, setBadge] = useState('star')
   const [busy, setBusy] = useState(false)
   const inputClass =
-    'w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none'
+    'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
 
   async function submit() {
     if (!title.trim()) return
@@ -191,7 +191,7 @@ function MilestoneFormModal({
                 setTarget(String(t.target_amount))
                 setBadge(t.badge_icon)
               }}
-              className="rounded-full bg-card px-3 py-1.5 text-xs font-semibold text-text-muted hover:text-gold"
+              className="rounded-full bg-card px-3 py-1.5 text-xs font-semibold text-text-muted hover:text-antique"
             >
               {t.title}
             </button>

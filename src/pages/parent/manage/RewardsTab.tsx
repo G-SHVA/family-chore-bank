@@ -71,7 +71,7 @@ export default function RewardsTab() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-8 w-8 animate-spin text-gold" />
+        <Loader2 className="h-8 w-8 animate-spin text-antique" />
       </div>
     )
   }
@@ -80,10 +80,10 @@ export default function RewardsTab() {
     <div className="flex flex-col gap-6">
       {/* Pending redemption requests (view only for now) */}
       <section>
-        <h2 className="mb-3 text-xl font-bold">
+        <h2 className="mb-3 text-2xl">
           Redemption requests{' '}
           {redemptions.length > 0 && (
-            <span className="ml-1 rounded-full bg-gold px-2 py-0.5 text-sm font-bold text-bg">
+            <span className="ml-1 label-caps rounded-input border border-antique/50 px-2 py-0.5 text-xs text-antique">
               {redemptions.length}
             </span>
           )}
@@ -95,14 +95,14 @@ export default function RewardsTab() {
             {redemptions.map((r) => (
               <Card key={r.id} className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gold/20 font-bold text-gold">
+                  <div className="flex h-10 w-10 items-center justify-center display rounded-full border border-antique/40 bg-wash text-antique">
                     {initials(r.member?.display_name)}
                   </div>
                   <div>
                     <div className="font-semibold">{r.reward?.title}</div>
                     <div className="text-sm text-text-muted">
                       {r.member?.display_name} ·{' '}
-                      <span className="font-semibold text-gold">
+                      <span className="font-semibold text-antique">
                         {formatCurrency(r.reward?.cost ?? 0, currency)}
                       </span>{' '}
                       · <span className="capitalize">{r.status}</span>
@@ -115,7 +115,7 @@ export default function RewardsTab() {
                 <div className="flex gap-2">
                   {r.status === 'pending' && (
                     <>
-                      <Button size="md" onClick={() => handleRedemption(r.id, 'approve')} disabled={busy === r.id}>
+                      <Button size="md" variant="primaryList" onClick={() => handleRedemption(r.id, 'approve')} disabled={busy === r.id}>
                         Approve
                       </Button>
                       <Button
@@ -129,7 +129,7 @@ export default function RewardsTab() {
                     </>
                   )}
                   {r.status === 'approved' && (
-                    <Button size="md" onClick={() => handleRedemption(r.id, 'fulfill')} disabled={busy === r.id}>
+                    <Button size="md" variant="primaryList" onClick={() => handleRedemption(r.id, 'fulfill')} disabled={busy === r.id}>
                       Mark fulfilled
                     </Button>
                   )}
@@ -143,8 +143,8 @@ export default function RewardsTab() {
       {/* Rewards catalog */}
       <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-xl font-bold">Rewards</h2>
-          <Button onClick={() => setCreating(true)}>
+          <h2 className="text-2xl">Rewards</h2>
+          <Button variant="accent" onClick={() => setCreating(true)}>
             <Plus className="h-5 w-5" /> Create Reward
           </Button>
         </div>
@@ -158,20 +158,20 @@ export default function RewardsTab() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {rewards.map((r) => (
               <Card key={r.id} className={cn(!r.is_available && 'opacity-60')}>
-                <div className="flex items-center gap-2 font-bold">
-                  <Gift className="h-5 w-5 text-gold" /> {r.title}
+                <div className="display flex items-center gap-2 text-lg">
+                  <Gift className="h-5 w-5 text-antique" /> {r.title}
                 </div>
-                <div className="mt-1 text-2xl font-extrabold text-gold">
+                <div className="mt-1 display text-2xl text-antique">
                   {formatCurrency(r.cost, currency)}
                 </div>
                 <button
                   onClick={() => handleToggle(r)}
                   disabled={busy === r.id}
                   className={cn(
-                    'mt-3 min-h-touch w-full rounded-input text-sm font-semibold',
+                    'label-caps mt-3 min-h-touch w-full rounded-input border text-[11px]',
                     r.is_available
-                      ? 'bg-green/15 text-green'
-                      : 'bg-white/5 text-text-muted'
+                      ? 'border-green/40 bg-green/10 text-green'
+                      : 'border-line bg-deep text-text-muted'
                   )}
                 >
                   {r.is_available ? 'Available' : 'Hidden'}
@@ -207,7 +207,7 @@ function RewardFormModal({
   const [cost, setCost] = useState('1')
   const [busy, setBusy] = useState(false)
   const inputClass =
-    'w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none'
+    'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
 
   async function submit() {
     if (!title.trim()) return
@@ -230,7 +230,7 @@ function RewardFormModal({
                 setTitle(t.title)
                 setCost(String(t.cost))
               }}
-              className="rounded-full bg-card px-3 py-1.5 text-xs font-semibold text-text-muted hover:text-gold"
+              className="rounded-full bg-card px-3 py-1.5 text-xs font-semibold text-text-muted hover:text-antique"
             >
               {t.title}
             </button>

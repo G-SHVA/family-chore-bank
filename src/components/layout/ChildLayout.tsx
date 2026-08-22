@@ -34,11 +34,11 @@ export function ChildLayout() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-bg">
-      <header className="relative flex items-center justify-between px-6 py-4">
+    <div data-surface="child" className="flex min-h-screen flex-col bg-bg">
+      <header className="spine relative flex items-center justify-between px-6 py-4">
         <div>
-          <div className="text-sm text-text-muted">{greeting()}</div>
-          <div className="text-2xl font-bold text-text">{activeMember.display_name}</div>
+          <div className="label-caps text-[11px] text-text-muted">{greeting()}</div>
+          <div className="display text-3xl text-text">{activeMember.display_name}</div>
         </div>
         <img
           src="/logo.png"
@@ -47,10 +47,10 @@ export function ChildLayout() {
         />
         <button
           onClick={handleExit}
-          className="flex min-h-touch items-center gap-2 rounded-input bg-card px-5 text-text-muted hover:text-text"
+          className="label-caps flex min-h-touch items-center gap-2 rounded-input border border-line bg-deep px-5 text-xs text-text-muted hover:border-antique/40 hover:text-antique"
         >
           <LogOut className="h-5 w-5" />
-          <span className="font-semibold">Switch user</span>
+          <span>Switch user</span>
         </button>
       </header>
 
@@ -58,7 +58,7 @@ export function ChildLayout() {
         <Outlet />
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-surface/95 backdrop-blur">
+      <nav className="spine-top fixed inset-x-0 bottom-0 bg-deep/95 backdrop-blur">
         <div className="mx-auto grid max-w-3xl grid-cols-4">
           {items.map((item) => (
             <NavLink
@@ -67,14 +67,14 @@ export function ChildLayout() {
               end={item.end}
               className={({ isActive }) =>
                 cn(
-                  'flex min-h-touch flex-col items-center justify-center gap-1 py-3 text-xs font-semibold',
-                  isActive ? 'text-gold' : 'text-text-muted'
+                  'label-caps flex min-h-touch flex-col items-center justify-center gap-1 py-3 text-[10px]',
+                  isActive ? 'text-antique' : 'text-text-muted'
                 )
               }
             >
               {({ isActive }) => (
                 <>
-                  <item.icon className={cn('h-7 w-7', isActive && 'text-gold')} />
+                  <item.icon className={cn('h-7 w-7', isActive && 'text-antique')} />
                   <span>{item.label}</span>
                 </>
               )}

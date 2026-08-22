@@ -37,7 +37,7 @@ export default function ChildBank() {
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center py-24">
-        <Loader2 className="h-10 w-10 animate-spin text-gold" />
+        <Loader2 className="h-10 w-10 animate-spin text-antique" />
       </div>
     )
   }
@@ -46,12 +46,12 @@ export default function ChildBank() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <Card className="mb-4 bg-gradient-to-br from-card to-surface">
-        <div className="text-sm text-text-muted">Current balance</div>
+      <Card className="mb-4">
+        <div className="label-caps text-[11px] text-text-muted">Current balance</div>
         <BalanceDisplay
           amount={balance}
           currency={currency}
-          className="mt-1 block text-[56px] font-extrabold leading-none text-green"
+          className="mt-2 block text-[56px] leading-none text-gold"
         />
         <div className="mt-4 flex gap-6 text-sm">
           <span className="text-text-muted">
@@ -69,7 +69,7 @@ export default function ChildBank() {
         </div>
       </Card>
 
-      <h2 className="mb-3 px-1 text-lg font-bold">Transaction history</h2>
+      <h2 className="mb-3 px-1 text-2xl">Transaction history</h2>
       {txns.length === 0 ? (
         <EmptyState
           icon={Landmark}
@@ -77,13 +77,13 @@ export default function ChildBank() {
           subtitle="Approved chores and expenses will appear here."
         />
       ) : (
-        <div className="overflow-hidden rounded-card border border-white/5">
+        <div className="overflow-hidden rounded-card border border-line">
           {txns.map((t, idx) => (
             <div
               key={t.id}
               className={cn(
                 'flex items-center gap-4 bg-card px-4 py-4',
-                idx > 0 && 'border-t border-white/5'
+                idx > 0 && 'border-t border-line'
               )}
             >
               <div
@@ -99,8 +99,8 @@ export default function ChildBank() {
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate font-semibold text-text">{t.description}</div>
-                <div className="text-xs text-text-muted">
+                <div className="truncate font-medium text-text">{t.description}</div>
+                <div className="label-caps text-[10px] text-text-muted">
                   {new Date(t.date).toLocaleDateString([], { month: 'short', day: 'numeric' })}
                 </div>
               </div>
@@ -109,7 +109,7 @@ export default function ChildBank() {
                   {t.type === 'income' ? '+' : '−'}
                   {formatCurrency(t.amount, currency)}
                 </div>
-                <div className="text-xs text-text-muted">{formatCurrency(t.runningBalance, currency)}</div>
+                <div className="text-xs tabular-nums text-text-muted">{formatCurrency(t.runningBalance, currency)}</div>
               </div>
             </div>
           ))}

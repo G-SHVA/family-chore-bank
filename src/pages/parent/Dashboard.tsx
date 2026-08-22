@@ -114,7 +114,7 @@ export default function ParentDashboard() {
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center gap-3 py-24">
-        <Loader2 className="h-10 w-10 animate-spin text-gold" />
+        <Loader2 className="h-10 w-10 animate-spin text-antique" />
         <span className="text-text-muted">Loading dashboard…</span>
       </div>
     )
@@ -124,39 +124,39 @@ export default function ParentDashboard() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-3xl font-bold">Dashboard</h1>
+      <h1 className="spine pb-4 text-4xl">Parent Dashboard</h1>
 
       {error && (
-        <div className="rounded-input bg-danger/10 px-4 py-3 text-danger">{error}</div>
+        <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">{error}</div>
       )}
 
       {/* Overview stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
-          <div className="text-sm text-text-muted">Total family balance</div>
+          <div className="label-caps text-[11px] text-text-muted">Total family balance</div>
           <BalanceDisplay
             amount={totalBalance}
             currency={currency}
-            className="mt-1 block text-4xl font-extrabold text-green"
+            className="mt-2 block text-4xl text-green"
           />
         </Card>
         <Card>
-          <div className="text-sm text-text-muted">Pending approvals</div>
-          <div className="mt-1 text-4xl font-extrabold text-gold">{approvals.length}</div>
+          <div className="label-caps text-[11px] text-text-muted">Pending approvals</div>
+          <div className="display mt-2 text-4xl text-antique">{approvals.length}</div>
         </Card>
         <Card>
-          <div className="text-sm text-text-muted">Expenses applied</div>
-          <div className="mt-1 text-4xl font-extrabold text-text">{recentExpenseCount}</div>
+          <div className="label-caps text-[11px] text-text-muted">Expenses applied</div>
+          <div className="display mt-2 text-4xl text-text">{recentExpenseCount}</div>
         </Card>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         {/* Approvals queue (prominent) */}
         <section className="lg:col-span-3">
-          <h2 className="mb-3 text-xl font-bold">
+          <h2 className="mb-3 text-2xl">
             Pending Approvals{' '}
             {approvals.length > 0 && (
-              <span className="ml-1 rounded-full bg-gold px-2 py-0.5 text-sm font-bold text-bg">
+              <span className="label-caps ml-1 rounded-input border border-antique/50 px-2 py-0.5 text-xs text-antique">
                 {approvals.length}
               </span>
             )}
@@ -180,10 +180,10 @@ export default function ParentDashboard() {
                       <div className="flex items-center gap-3">
                         <Avatar member={a.member} />
                         <div>
-                          <div className="font-bold text-text">{a.chore?.title}</div>
+                          <div className="display text-lg text-text">{a.chore?.title}</div>
                           <div className="text-sm text-text-muted">
                             {a.member?.display_name} ·{' '}
-                            <span className="font-semibold text-gold">
+                            <span className="font-semibold text-antique">
                               {formatCurrency(a.chore?.value ?? 0, currency)}
                             </span>
                             <span className="ml-2 inline-flex items-center gap-1">
@@ -195,6 +195,7 @@ export default function ParentDashboard() {
                       <div className="flex gap-2">
                         <Button
                           size="lg"
+                          variant="primaryList"
                           onClick={() => handleApprove(a)}
                           disabled={busyId === a.id}
                         >
@@ -220,19 +221,19 @@ export default function ParentDashboard() {
         {/* Right column: child cards + quick add */}
         <div className="flex flex-col gap-6 lg:col-span-2">
           <section>
-            <h2 className="mb-3 text-xl font-bold">Children</h2>
+            <h2 className="mb-3 text-2xl">Children</h2>
             <div className="flex flex-col gap-3">
               {summaries.map((s) => (
                 <Card key={s.member.id}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <Avatar member={s.member} />
-                      <div className="font-bold text-text">{s.member.display_name}</div>
+                      <div className="display text-lg text-text">{s.member.display_name}</div>
                     </div>
                     <BalanceDisplay
                       amount={s.member.balance ?? 0}
                       currency={currency}
-                      className="text-2xl font-extrabold text-green"
+                      className="text-2xl text-green"
                     />
                   </div>
                   <div className="mt-3 flex items-center gap-4 text-sm text-text-muted">
@@ -243,7 +244,7 @@ export default function ParentDashboard() {
                       </span>
                     </span>
                     {s.currentStreak > 0 && (
-                      <span className="flex items-center gap-1 text-gold">
+                      <span className="flex items-center gap-1 text-antique">
                         <Flame className="h-4 w-4" /> {s.currentStreak}d
                       </span>
                     )}
@@ -277,10 +278,10 @@ export default function ParentDashboard() {
 
 function Avatar({ member }: { member: { display_name: string | null; avatar_url: string | null } | null }) {
   if (member?.avatar_url) {
-    return <img src={member.avatar_url} alt="" className="h-11 w-11 rounded-full object-cover" />
+    return <img src={member.avatar_url} alt="" className="h-11 w-11 rounded-full border border-antique/40 object-cover" />
   }
   return (
-    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gold/20 font-bold text-gold">
+    <div className="display flex h-11 w-11 items-center justify-center rounded-full border border-antique/40 bg-wash text-antique">
       {initials(member?.display_name)}
     </div>
   )
@@ -309,7 +310,7 @@ function RejectModal({
         onChange={(e) => setNote(e.target.value)}
         rows={3}
         placeholder="e.g. Please redo — the room still needs tidying."
-        className="w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none"
+        className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
       />
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
@@ -360,13 +361,13 @@ function QuickAdd({
   }
 
   const selectClass =
-    'w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none'
+    'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
 
   return (
     <section>
-      <h2 className="mb-3 text-xl font-bold">Quick Add</h2>
+      <h2 className="mb-3 text-2xl">Quick Add</h2>
       <Card className="flex flex-col gap-3">
-        <div className="flex gap-1 rounded-input bg-bg p-1">
+        <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
           {(['chore', 'expense'] as const).map((m) => (
             <button
               key={m}
@@ -376,8 +377,8 @@ function QuickAdd({
                 setDone(null)
               }}
               className={cn(
-                'flex-1 rounded-md py-2 text-sm font-semibold capitalize',
-                mode === m ? 'bg-gold text-bg' : 'text-text-muted'
+                'label-caps flex-1 rounded-input py-2 text-[11px]',
+                mode === m ? 'bg-wash text-antique' : 'text-text-muted'
               )}
             >
               {m === 'chore' ? 'Assign Chore' : 'Add Expense'}
@@ -409,7 +410,7 @@ function QuickAdd({
               ))}
         </select>
 
-        <Button fullWidth size="lg" onClick={submit} disabled={!childId || !itemId || busy}>
+        <Button variant="accent" fullWidth size="lg" onClick={submit} disabled={!childId || !itemId || busy}>
           {busy ? 'Working…' : mode === 'chore' ? 'Assign Chore' : 'Apply Expense'}
         </Button>
         {done && <p className="text-center text-sm text-green">{done}</p>}

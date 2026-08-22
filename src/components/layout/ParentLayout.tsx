@@ -34,13 +34,13 @@ export function ParentLayout() {
   return (
     <div className="flex min-h-screen bg-bg">
       {/* Sidebar */}
-      <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-surface p-4">
-        <div className="mb-8 flex items-center gap-3 px-2 pt-2">
+      <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-deep">
+        <div className="spine flex items-center gap-3 px-5 py-5">
           <img src="/logo.png" alt="" className="h-10 w-10" />
-          <span className="text-lg font-extrabold text-gold">{family?.name ?? 'Chore Bank'}</span>
+          <span className="display text-xl text-antique">{family?.name ?? 'Chore Bank'}</span>
         </div>
 
-        <nav className="flex flex-1 flex-col gap-2">
+        <nav className="flex flex-1 flex-col gap-1 p-4">
           {items.map((item) => (
             <NavLink
               key={item.to}
@@ -48,8 +48,10 @@ export function ParentLayout() {
               end={item.end}
               className={({ isActive }) =>
                 cn(
-                  'flex min-h-touch items-center gap-3 rounded-input px-4 text-lg font-semibold',
-                  isActive ? 'bg-gold text-bg' : 'text-text-muted hover:bg-white/5 hover:text-text'
+                  'label-caps flex min-h-touch items-center gap-3 rounded-input border-l-2 px-4 text-xs',
+                  isActive
+                    ? 'border-antique bg-wash text-antique'
+                    : 'border-transparent text-text-muted hover:bg-wash hover:text-text'
                 )
               }
             >
@@ -59,16 +61,16 @@ export function ParentLayout() {
           ))}
         </nav>
 
-        <div className="mt-4 border-t border-white/10 pt-4">
-          <div className="px-2 pb-3 text-sm text-text-muted">
-            Signed in as <span className="font-semibold text-text">{activeMember.display_name}</span>
+        <div className="mt-4 border-t border-line p-4">
+          <div className="label-caps px-2 pb-3 text-[10px] text-text-muted">
+            Signed in as <span className="text-antique">{activeMember.display_name}</span>
           </div>
           <button
             onClick={handleExit}
-            className="flex min-h-touch w-full items-center gap-3 rounded-input px-4 text-text-muted hover:bg-white/5 hover:text-text"
+            className="label-caps flex min-h-touch w-full items-center gap-3 rounded-input px-4 text-xs text-text-muted hover:bg-wash hover:text-text"
           >
             <LogOut className="h-6 w-6" />
-            <span className="font-semibold">Switch user</span>
+            <span>Switch user</span>
           </button>
         </div>
       </aside>

@@ -61,33 +61,33 @@ export default function Settings() {
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center py-24">
-        <Loader2 className="h-10 w-10 animate-spin text-gold" />
+        <Loader2 className="h-10 w-10 animate-spin text-antique" />
       </div>
     )
   }
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Settings</h1>
+      <div className="spine flex items-center justify-between pb-4">
+        <h1 className="text-4xl">Settings</h1>
         <Button onClick={() => setAdding(true)}>
           <Plus className="h-5 w-5" /> Add Member
         </Button>
       </div>
 
       <section>
-        <h2 className="mb-3 text-xl font-bold">Family members</h2>
+        <h2 className="mb-3 text-2xl">Family members</h2>
         <div className="flex flex-col gap-3">
           {members.map((m) => (
             <Card key={m.id} className={cn(!m.is_active && 'opacity-60')}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gold/20 font-bold text-gold">
+                  <div className="display flex h-11 w-11 items-center justify-center rounded-full border border-antique/40 bg-wash text-antique">
                     {initials(m.display_name)}
                   </div>
                   <div>
-                    <div className="font-bold text-text">{m.display_name}</div>
-                    <div className="text-xs uppercase tracking-wide text-text-muted">
+                    <div className="display text-lg text-text">{m.display_name}</div>
+                    <div className="label-caps text-[10px] text-text-muted">
                       {isParent(m) ? 'Parent' : 'Child'} · {formatCurrency(m.balance ?? 0, currency)}
                       {' · '}
                       {hasPin(m.id) ? 'PIN set' : 'No PIN'}
@@ -98,13 +98,13 @@ export default function Settings() {
                   <button
                     onClick={() => handleResetPin(m)}
                     disabled={busy === m.id || !hasPin(m.id)}
-                    className="flex min-h-touch items-center gap-1 rounded-input px-3 text-sm font-semibold text-text-muted hover:bg-white/5 hover:text-text disabled:opacity-40"
+                    className="label-caps flex min-h-touch items-center gap-1 rounded-input px-3 text-[11px] text-text-muted hover:bg-wash hover:text-antique disabled:opacity-40"
                   >
                     <KeyRound className="h-4 w-4" /> Reset PIN
                   </button>
                   <button
                     onClick={() => setEditing(m)}
-                    className="flex h-11 w-11 items-center justify-center rounded-input text-text-muted hover:bg-white/5 hover:text-text"
+                    className="flex h-11 w-11 items-center justify-center rounded-input text-text-muted hover:bg-wash hover:text-antique"
                     aria-label="Edit"
                   >
                     <Pencil className="h-5 w-5" />
@@ -113,7 +113,7 @@ export default function Settings() {
                     onClick={() => handleToggleActive(m)}
                     disabled={busy === m.id}
                     className={cn(
-                      'min-h-touch rounded-input px-3 text-sm font-semibold',
+                      'label-caps min-h-touch rounded-input px-3 text-[11px]',
                       m.is_active ? 'text-danger hover:bg-danger/10' : 'text-green hover:bg-green/10'
                     )}
                   >
@@ -162,7 +162,7 @@ function MemberFormModal({
   const [avatar, setAvatar] = useState(member?.avatar_url ?? '')
   const [busy, setBusy] = useState(false)
   const inputClass =
-    'w-full rounded-input border border-white/10 bg-card p-3 text-text focus:border-gold focus:outline-none'
+    'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
 
   async function submit() {
     if (!name.trim()) return
@@ -182,8 +182,8 @@ function MemberFormModal({
     <Modal open onClose={onClose} title={member ? 'Edit member' : 'Add member'}>
       <div className="flex flex-col gap-3">
         {!member && (
-          <div className="flex gap-2 rounded-input bg-gold/10 p-3 text-sm text-text-muted">
-            <Info className="h-5 w-5 shrink-0 text-gold" />
+          <div className="flex gap-2 rounded-input border border-line bg-wash p-3 text-sm text-text-muted">
+            <Info className="h-5 w-5 shrink-0 text-antique" />
             <span>
               To let this person <strong>sign in on their own device</strong>, first create their
               Supabase Auth user in the dashboard, then add them here. Children who only use the
@@ -191,9 +191,9 @@ function MemberFormModal({
             </span>
           </div>
         )}
-        <label className="text-sm text-text-muted">Display name</label>
+        <label className="label-caps text-[11px] text-text-muted">Display name</label>
         <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
-        <label className="text-sm text-text-muted">Role</label>
+        <label className="label-caps text-[11px] text-text-muted">Role</label>
         <select
           value={role}
           onChange={(e) => setRole(e.target.value as 'child' | 'parent')}
@@ -202,7 +202,7 @@ function MemberFormModal({
           <option value="child">Child</option>
           <option value="parent">Parent</option>
         </select>
-        <label className="text-sm text-text-muted">Avatar image URL (optional)</label>
+        <label className="label-caps text-[11px] text-text-muted">Avatar image URL (optional)</label>
         <input
           value={avatar}
           onChange={(e) => setAvatar(e.target.value)}
