@@ -53,6 +53,32 @@ Lucide React ONLY. Never emoji as icons.
 - Always handle loading, error, and empty states
 - TypeScript strict — no `any` types
 
+## CRITICAL BUG FIXED Aug 2026 — chore_assignments queries
+
+getMemberInstances was sorting ascending with limit(300), silently truncating
+all live chores once a child exceeded 300 history rows. Both kids saw empty
+chore lists while their rosters generated normally. Fixed by splitting into
+purpose-built queries: the pending/active path now sorts DESCENDING under a
+500-row cap so current chores always survive it, and the stats path uses
+server-side counts (head:true) plus an approved-only fetch instead of
+deriving totals from that capped list.
+
+RULE: any future query against chore_assignments must specify status filters
+explicitly and never rely on a row limit to implicitly exclude history. If a
+query is capped, sort so the rows you actually need are the ones that survive
+the cap — and never derive lifetime totals from a capped fetch.
+
+Note the active path is capped at 500, not uncapped. The cap is a payload
+guard, not a filter: correctness comes from the DESC ordering, not from the
+limit. A child who ever exceeds 500 rows of *live* chores would hit the same
+class of bug, so keep the cleanup and the V2 on-demand migration in view.
+
+### Known minor discrepancy — Achievements total earned (investigate later)
+Achievements displayed $6.90 total earned where SQL computes $7.00 over the
+same rows — a 10c gap, likely one approved chore_assignment whose joined
+chore has a null or changed value. Low priority, unrelated to the truncation
+bug. Do not chase without a reason.
+
 ## Known schema notes (verified against live DB)
 - family_members has NO current_streak / longest_streak columns — streaks
   are derived from chore_assignments history, not stored.
