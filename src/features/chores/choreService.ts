@@ -219,17 +219,73 @@ function buildInstance(template: ChoreAssignment, due: Date): TablesInsert<'chor
 
 const ACTIVE_STATUSES = ['pending', 'in_progress', 'completed', 'rejected']
 
-/** All instance rows (never templates) for a member, newest first, with chore. */
+/**
+ * All instance rows (never templates) for a member, NEWEST FIRST, with chore.
+ *
+ * The ordering is load-bearing, not cosmetic. This is a capped fetch, so
+ * whichever end of the range it sorts from is the end that survives the cap.
+ * It previously sorted ascending (oldest first), which meant that once a
+ * child accumulated more than INSTANCE_FETCH_LIMIT rows of history, the cap
+ * silently ate the *newest* rows — every pending chore for today — and the
+ * child saw an empty chore list while the roster generated normally.
+ * Sorting descending keeps current chores in the window at any history size.
+ *
+ * Callers that need lifetime totals must NOT derive them from this list;
+ * use getLifetimeCounts(), which aggregates server-side and is not capped.
+ */
+const INSTANCE_FETCH_LIMIT = 500
+
 export async function getMemberInstances(memberId: string): Promise<AssignmentWithChore[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
     .select('*, chore:chores(*)')
     .eq('assigned_to', memberId)
     .eq('is_template', false)
-    .order('due_date', { ascending: true })
-    .limit(300)
+    .order('due_date', { ascending: false })
+    .limit(INSTANCE_FETCH_LIMIT)
   if (error) throw error
   return (data ?? []) as AssignmentWithChore[]
+}
+
+/**
+ * Every approved instance for a member, with its chore value. Approved rows
+ * are the financial history: they are never expired or cleaned up, and they
+ * grow far slower than expired/rejected churn, so this stays small enough to
+ * fetch whole. Earnings and streaks are derived from this, not from the
+ * capped recent-instances window.
+ */
+async function getApprovedInstances(memberId: string): Promise<AssignmentWithChore[]> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('*, chore:chores(*)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', false)
+    .eq('status', 'approved')
+    .order('approved_at', { ascending: false })
+    .limit(5000)
+  if (error) throw error
+  return (data ?? []) as AssignmentWithChore[]
+}
+
+/**
+ * Exact lifetime row counts, aggregated by Postgres. `head: true` transfers
+ * no rows at all, so these stay correct however large the history grows.
+ */
+async function getLifetimeCounts(memberId: string): Promise<{ total: number; done: number }> {
+  const base = () =>
+    supabase
+      .from('chore_assignments')
+      .select('*', { count: 'exact', head: true })
+      .eq('assigned_to', memberId)
+      .eq('is_template', false)
+
+  const [totalRes, doneRes] = await Promise.all([
+    base(),
+    base().in('status', ['approved', 'completed']),
+  ])
+  if (totalRes.error) throw totalRes.error
+  if (doneRes.error) throw doneRes.error
+  return { total: totalRes.count ?? 0, done: doneRes.count ?? 0 }
 }
 
 export interface ChildDashboardData {
@@ -497,27 +553,29 @@ export interface AchievementsOverview {
 
 export async function getAchievementsOverview(memberId: string): Promise<AchievementsOverview> {
   const now = new Date()
-  const instances = await getMemberInstances(memberId)
-  const approved = instances.filter((i) => i.status === 'approved')
+  // Lifetime figures come from the full approved set and server-side counts —
+  // never from getMemberInstances(), which is deliberately capped.
+  const [approved, counts] = await Promise.all([
+    getApprovedInstances(memberId),
+    getLifetimeCounts(memberId),
+  ])
 
   const totalEarned = approved.reduce((s, i) => s + (i.chore?.value ?? 0), 0)
-  const totalCompleted = instances.filter(
-    (i) => i.status === 'approved' || i.status === 'completed'
-  ).length
+  const totalCompleted = counts.done
 
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
   const monthEarned = approved
     .filter((i) => i.approved_at && new Date(i.approved_at) >= monthStart)
     .reduce((s, i) => s + (i.chore?.value ?? 0), 0)
 
-  const doneCount = totalCompleted
-  const completionRate = instances.length > 0 ? Math.round((doneCount / instances.length) * 100) : 0
+  const completionRate =
+    counts.total > 0 ? Math.round((counts.done / counts.total) * 100) : 0
 
   const approvedDays = new Set<number>()
   for (const i of approved) {
     if (i.approved_at) approvedDays.add(startOfDay(new Date(i.approved_at)).getTime())
   }
-  const currentStreak = computeStreak(instances, now)
+  const currentStreak = computeStreak(approved, now)
   const longestStreak = computeLongestStreak(approvedDays)
 
   // Last 7 days (oldest -> newest) count of approved chores per day.
