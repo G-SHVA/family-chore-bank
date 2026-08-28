@@ -84,8 +84,24 @@ bug. Do not chase without a reason.
   are derived from chore_assignments history, not stored.
 - There is NO `notifications` table — rejection notes live on
   chore_assignments.notes for MVP.
-- PINs live in families.member_pins (jsonb, keyed by family_members.id).
-  Column added via migration on approval. All members are PIN-gated.
+- PINs live in families.member_pins (jsonb, keyed by family_members.id), stored
+  as bcrypt hashes (cost 10). All members are PIN-gated.
+  VERIFICATION IS SERVER-SIDE ONLY (changed 2026-08-28). Never reintroduce a
+  client-side PIN comparison, and never select member_pins from the browser:
+  * authenticated/anon have SELECT on the other 13 families columns only, so
+    `select('*')` on families FAILS. Use the explicit FAMILY_COLUMNS list in
+    familyService.
+  * verify-pin / set-pin Edge Functions own all PIN reads and writes via the
+    service-role key. They resolve the caller's family from the JWT and refuse
+    any member_id outside it.
+  * public.pin_attempts holds the rate-limit counters: 5 failures locks a member
+    for 60s (429). RLS on, no policies, and no client grants — service-role only.
+  * hasPin comes from the family_pin_status() RPC, which returns booleans only.
+  * verify-pin still accepts a legacy plaintext value and re-hashes it on a
+    correct PIN. All 4 live PINs are migrated, so that path is now dead code —
+    it can be dropped once no other environment has plaintext.
+  * A 4-digit PIN is only 10k possibilities, so bcrypt alone is not the defence:
+    the rate limit and the unreadable column are. Keep both.
 - chores/expenses use is_template + null family_id for template rows.
 - chore_assignments.is_active — pause/resume a roster entry. The generator only
   reads active templates. Pausing is the normal way to take a chore off a child;

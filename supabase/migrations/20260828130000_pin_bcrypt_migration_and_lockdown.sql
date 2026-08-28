@@ -1,4 +1,4 @@
--- PENDING — run ONLY after the new client + Edge Functions are live in production.
+-- APPLIED 2026-08-28, after the new client went live. Run ONLY after the new client + Edge Functions are live in production.
 --
 -- Why the ordering matters:
 --   * The old client compares PINs in the browser against plaintext. Hashing
@@ -40,3 +40,10 @@ grant select (
   currency, timezone, created_at, updated_at, share_progress,
   allow_notifications, data_collection
 ) on public.families to authenticated, anon;
+
+-- 3. Applied as a follow-up. RLS already made pin_attempts rows invisible and
+--    unwritable to clients (a client DELETE matched zero rows and the lockout
+--    held), but PostgREST answered 204, which reads like success. Removing the
+--    grants makes any client attempt an unambiguous 403. service_role bypasses
+--    both grants and RLS, so the Edge Functions are unaffected.
+revoke all on public.pin_attempts from authenticated, anon;
