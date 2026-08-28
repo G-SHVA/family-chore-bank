@@ -18,25 +18,16 @@ export function hashPin(pin: string): string {
 }
 
 /**
- * Verifies a PIN against whatever is stored. Accepts a legacy plaintext value
- * so the function is safe to deploy BEFORE the migration runs — see
- * `needsUpgrade` for the opportunistic re-hash.
+ * Verifies a PIN against a stored bcrypt hash.
+ *
+ * There is deliberately no plaintext path. The migration completed on
+ * 2026-08-28 and every stored PIN is a bcrypt hash; callers must reject a
+ * non-hash value outright (see isBcryptHash) rather than fall back to a
+ * string compare. Reintroducing a fallback would resurrect the vulnerability
+ * this replaced.
  */
 export function verifyAgainstStored(pin: string, stored: string): boolean {
-  if (isBcryptHash(stored)) return bcrypt.compareSync(pin, stored)
-  return timingSafeEqual(pin, stored)
-}
-
-export function needsUpgrade(stored: string): boolean {
-  return !isBcryptHash(stored)
-}
-
-/** Constant-time string compare — only used on the legacy plaintext path. */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
+  return bcrypt.compareSync(pin, stored)
 }
 
 export interface Caller {

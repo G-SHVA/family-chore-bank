@@ -13,8 +13,7 @@ import {
   memberInFamily,
   readPins,
   verifyAgainstStored,
-  needsUpgrade,
-  hashPin,
+  isBcryptHash,
   PIN_PATTERN,
 } from '../_shared/pin.ts'
 
@@ -72,19 +71,20 @@ Deno.serve(async (req: Request) => {
       return json({ valid: false, error: 'no_pin_set' }, 409)
     }
 
+    // Fail closed on anything that isn't a bcrypt hash. The plaintext
+    // comparison was removed once the migration completed, so a legacy or
+    // corrupt value is treated as unusable rather than compared directly. The
+    // client shows the same "ask a parent to set one up" prompt, and a parent
+    // clearing + re-setting the PIN is the recovery path.
+    if (!isBcryptHash(stored)) {
+      return json({ valid: false, error: 'pin_not_hashed' }, 409)
+    }
+
     const valid = verifyAgainstStored(pin, stored)
 
     if (valid) {
       // Clear the failure counter.
       await admin.from('pin_attempts').delete().eq('member_id', memberId)
-
-      // Opportunistic upgrade: a correct PIN still stored in plaintext gets
-      // hashed in place, so the migration is belt-and-braces rather than the
-      // only path off plaintext.
-      if (needsUpgrade(stored)) {
-        const next = { ...pins, [memberId]: hashPin(pin) }
-        await admin.from('families').update({ member_pins: next }).eq('id', caller.familyId)
-      }
       return json({ valid: true })
     }
 

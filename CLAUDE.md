@@ -97,9 +97,11 @@ bug. Do not chase without a reason.
   * public.pin_attempts holds the rate-limit counters: 5 failures locks a member
     for 60s (429). RLS on, no policies, and no client grants — service-role only.
   * hasPin comes from the family_pin_status() RPC, which returns booleans only.
-  * verify-pin still accepts a legacy plaintext value and re-hashes it on a
-    correct PIN. All 4 live PINs are migrated, so that path is now dead code —
-    it can be dropped once no other environment has plaintext.
+  * There is NO plaintext fallback. The legacy compare and the opportunistic
+    re-hash were removed once the migration confirmed 0 plaintext PINs
+    (2026-08-28). verify-pin now fails closed on any stored value that isn't a
+    bcrypt hash, returning 409 pin_not_hashed; recovery is a parent clearing the
+    PIN and the member setting a new one. Do not reintroduce a plaintext branch.
   * A 4-digit PIN is only 10k possibilities, so bcrypt alone is not the defence:
     the rate limit and the unreadable column are. Keep both.
 - chores/expenses use is_template + null family_id for template rows.

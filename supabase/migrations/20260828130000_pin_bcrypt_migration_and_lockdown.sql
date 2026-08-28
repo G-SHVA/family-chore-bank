@@ -9,8 +9,10 @@
 -- client runs happily against un-migrated data. That is what makes this safe
 -- to defer rather than run in lockstep.
 --
--- Rollback for the hashing step is a restore of the pre-migration jsonb
--- snapshot; bcrypt is one-way, so there is no in-place undo.
+-- There is no rollback for the hashing step. bcrypt is one-way, the plaintext
+-- snapshot was deleted on completion, and verify-pin no longer has a plaintext
+-- path to roll back to. If a PIN is ever lost, a parent clears it and the
+-- member sets a new one.
 
 -- 1. Plaintext -> bcrypt (cost 10). pgcrypto lives in the `extensions` schema.
 --    Idempotent: anything already hashed passes straight through, so a re-run
