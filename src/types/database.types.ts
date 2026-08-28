@@ -586,6 +586,35 @@ export type Database = {
         }
         Relationships: []
       }
+      pin_attempts: {
+        Row: {
+          failed_count: number
+          locked_until: string | null
+          member_id: string
+          window_started_at: string
+        }
+        Insert: {
+          failed_count?: number
+          locked_until?: string | null
+          member_id: string
+          window_started_at?: string
+        }
+        Update: {
+          failed_count?: number
+          locked_until?: string | null
+          member_id?: string
+          window_started_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pin_attempts_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: true
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plan_availability: {
         Row: {
           description: string | null
@@ -802,6 +831,13 @@ export type Database = {
           family_id: string
           subscription_id: string
           success: boolean
+        }[]
+      }
+      family_pin_status: {
+        Args: never
+        Returns: {
+          has_pin: boolean
+          member_id: string
         }[]
       }
       get_current_user_email: { Args: never; Returns: string }

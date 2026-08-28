@@ -10,13 +10,16 @@ import {
 } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import type { Family, FamilyMember } from '@/lib/supabase'
+import type { FamilyMember } from '@/lib/supabase'
 import {
   fetchKioskContext,
-  getMemberPins,
-  setMemberPin,
-  clearMemberPin,
-  type MemberPins,
+  fetchPinStatus,
+  verifyMemberPin,
+  createMemberPin,
+  removeMemberPin,
+  type KioskFamily,
+  type PinStatus,
+  type PinVerifyResult,
 } from '@/features/family/familyService'
 
 interface AuthContextValue {
@@ -25,7 +28,7 @@ interface AuthContextValue {
   /** True when there's no session and no auto-login — show the login screen. */
   needsLogin: boolean
   session: Session | null
-  family: Family | null
+  family: KioskFamily | null
   /** Selectable family members (excludes the kiosk operator account). */
   members: FamilyMember[]
   /** The member currently using the kiosk (null = at the picker). */
@@ -33,7 +36,8 @@ interface AuthContextValue {
   selectMember: (member: FamilyMember) => void
   exitToPicker: () => void
   hasPin: (memberId: string) => boolean
-  verifyPin: (memberId: string, pin: string) => boolean
+  /** Server-side verification. The browser never sees a PIN value or hash. */
+  verifyPin: (memberId: string, pin: string) => Promise<PinVerifyResult>
   savePin: (memberId: string, pin: string) => Promise<void>
   clearPin: (memberId: string) => Promise<void>
   /** Manual sign-in from the login screen. Returns an error message or null. */
@@ -50,10 +54,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const [needsLogin, setNeedsLogin] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
-  const [family, setFamily] = useState<Family | null>(null)
+  const [family, setFamily] = useState<KioskFamily | null>(null)
   const [allMembers, setAllMembers] = useState<FamilyMember[]>([])
   const [operatorMemberId, setOperatorMemberId] = useState<string | null>(null)
-  const [memberPins, setMemberPins] = useState<MemberPins>({})
+  const [pinStatus, setPinStatus] = useState<PinStatus>({})
   const [activeMember, setActiveMember] = useState<FamilyMember | null>(null)
   const didAutoLogin = useRef(false)
 
@@ -62,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setFamily(ctx.family)
     setAllMembers(ctx.members)
     setOperatorMemberId(ctx.currentUserMemberId)
-    setMemberPins(getMemberPins(ctx.family))
+    setPinStatus(ctx.pinStatus)
   }, [])
 
   // Boot: get/establish session, then load family context.
@@ -133,21 +137,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const selectMember = useCallback((member: FamilyMember) => setActiveMember(member), [])
   const exitToPicker = useCallback(() => setActiveMember(null), [])
 
-  const hasPin = useCallback((memberId: string) => Boolean(memberPins[memberId]), [memberPins])
+  const hasPin = useCallback((memberId: string) => Boolean(pinStatus[memberId]), [pinStatus])
+
+  // No comparison happens here any more — the PIN goes to the verify-pin Edge
+  // Function and only a verdict comes back.
   const verifyPin = useCallback(
-    (memberId: string, pin: string) => memberPins[memberId] === pin,
-    [memberPins]
+    (memberId: string, pin: string) => verifyMemberPin(memberId, pin),
+    []
   )
 
-  const savePin = useCallback(
-    async (memberId: string, pin: string) => {
-      if (!family) throw new Error('Family not loaded.')
-      const next = await setMemberPin(family.id, memberPins, memberId, pin)
-      setMemberPins(next)
-      setFamily((f) => (f ? { ...f, member_pins: next } : f))
-    },
-    [family, memberPins]
-  )
+  const savePin = useCallback(async (memberId: string, pin: string) => {
+    await createMemberPin(memberId, pin)
+    setPinStatus((prev) => ({ ...prev, [memberId]: true }))
+  }, [])
 
   const signIn = useCallback(
     async (email: string, password: string): Promise<string | null> => {
@@ -166,15 +168,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [loadContext]
   )
 
-  const clearPin = useCallback(
-    async (memberId: string) => {
-      if (!family) throw new Error('Family not loaded.')
-      const next = await clearMemberPin(family.id, memberPins, memberId)
-      setMemberPins(next)
-      setFamily((f) => (f ? { ...f, member_pins: next } : f))
-    },
-    [family, memberPins]
-  )
+  const clearPin = useCallback(async (memberId: string) => {
+    await removeMemberPin(memberId)
+    setPinStatus((prev) => ({ ...prev, [memberId]: false }))
+  }, [])
 
   const resetPassword = useCallback(async (email: string): Promise<string | null> => {
     const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
@@ -185,6 +182,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     if (session?.user) await loadContext(session.user.id)
+    else setPinStatus(await fetchPinStatus())
   }, [session, loadContext])
 
   const value: AuthContextValue = {

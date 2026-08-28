@@ -12,11 +12,37 @@ export default function KioskSelect() {
   const { loading, error, family, members, hasPin, verifyPin, savePin, selectMember } = useAuth()
   const [selected, setSelected] = useState<FamilyMember | null>(null)
   const [now, setNow] = useState(() => new Date())
+  /** member id -> epoch ms until which that tile is locked after 5 bad PINs. */
+  const [lockedUntil, setLockedUntil] = useState<Record<string, number>>({})
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000 * 30)
     return () => clearInterval(t)
   }, [])
+
+  // Only run a 1s timer while something is actually locked, so the idle kiosk
+  // isn't re-rendering every second.
+  const hasLock = Object.values(lockedUntil).some((t) => t > nowMs)
+  useEffect(() => {
+    if (!hasLock) return
+    const t = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [hasLock])
+
+  function lockRemaining(memberId: string): number {
+    const until = lockedUntil[memberId]
+    if (!until) return 0
+    return Math.max(0, Math.ceil((until - nowMs) / 1000))
+  }
+
+  function handleLockout(memberId: string, retryAfterSeconds: number) {
+    setNowMs(Date.now())
+    setLockedUntil((prev) => ({ ...prev, [memberId]: Date.now() + retryAfterSeconds * 1000 }))
+    // Close the pad after a beat so the message is readable, then the tile
+    // carries the countdown.
+    setTimeout(() => setSelected(null), 1200)
+  }
 
   function goToDashboard(member: FamilyMember) {
     selectMember(member)
@@ -77,7 +103,12 @@ export default function KioskSelect() {
         ) : (
           <div className="grid w-full max-w-3xl grid-cols-2 gap-6">
             {members.map((member) => (
-              <MemberTile key={member.id} member={member} onSelect={() => setSelected(member)} />
+              <MemberTile
+                key={member.id}
+                member={member}
+                lockedFor={lockRemaining(member.id)}
+                onSelect={() => setSelected(member)}
+              />
             ))}
           </div>
         )}
@@ -93,6 +124,7 @@ export default function KioskSelect() {
           mode={hasPin(selected.id) ? 'verify' : 'create'}
           verify={(pin) => verifyPin(selected.id, pin)}
           onSuccess={() => goToDashboard(selected)}
+          onLockout={(retryAfter) => handleLockout(selected.id, retryAfter)}
           onCreate={async (pin) => {
             await savePin(selected.id, pin)
             goToDashboard(selected)
@@ -103,15 +135,28 @@ export default function KioskSelect() {
   )
 }
 
-function MemberTile({ member, onSelect }: { member: FamilyMember; onSelect: () => void }) {
+function MemberTile({
+  member,
+  lockedFor,
+  onSelect,
+}: {
+  member: FamilyMember
+  /** Seconds remaining on a PIN lockout; 0 when unlocked. */
+  lockedFor: number
+  onSelect: () => void
+}) {
   const parent = isParent(member)
+  const locked = lockedFor > 0
   return (
     <button
       onClick={onSelect}
+      disabled={locked}
       className={cn(
         'flex min-h-[200px] flex-col items-center justify-center gap-4 rounded-[4px] bg-card p-6',
-        'border-2 border-antique/40 transition-[border-color,transform] duration-150',
-        'hover:border-antique active:scale-[0.98] focus-visible:outline-none focus-visible:border-antique'
+        'border-2 transition-[border-color,transform] duration-150',
+        locked
+          ? 'cursor-not-allowed border-danger/40 opacity-60'
+          : 'border-antique/40 hover:border-antique active:scale-[0.98] focus-visible:outline-none focus-visible:border-antique'
       )}
     >
       {member.avatar_url ? (
@@ -127,9 +172,15 @@ function MemberTile({ member, onSelect }: { member: FamilyMember; onSelect: () =
       )}
       <div className="text-center">
         <div className="display text-3xl text-text">{member.display_name}</div>
-        <div className="label-caps text-[11px] text-text-muted">
-          {parent ? 'Parent' : 'Child'}
-        </div>
+        {locked ? (
+          <div className="label-caps text-[11px] text-danger">
+            Locked — {lockedFor}s
+          </div>
+        ) : (
+          <div className="label-caps text-[11px] text-text-muted">
+            {parent ? 'Parent' : 'Child'}
+          </div>
+        )}
       </div>
     </button>
   )

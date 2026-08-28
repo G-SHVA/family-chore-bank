@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Delete } from 'lucide-react'
 import { Modal } from './Modal'
+import type { PinVerifyResult } from '@/features/family/familyService'
 import { cn, initials } from '@/lib/utils'
 
 type Mode = 'verify' | 'create'
@@ -12,10 +13,15 @@ interface PinPadProps {
   memberName: string
   avatarUrl?: string | null
   mode?: Mode
-  /** verify mode: return true if the PIN is correct. May be async. */
-  verify?: (pin: string) => boolean | Promise<boolean>
+  /**
+   * verify mode: server-side check. Resolves to a verdict — this component
+   * never compares PINs itself.
+   */
+  verify?: (pin: string) => Promise<PinVerifyResult>
   /** verify mode: called after a correct PIN. */
   onSuccess?: () => void
+  /** verify mode: too many failed attempts; argument is the lockout in seconds. */
+  onLockout?: (retryAfterSeconds: number) => void
   /** create mode: called with the confirmed new PIN. May be async. */
   onCreate?: (pin: string) => void | Promise<void>
 }
@@ -31,6 +37,7 @@ export function PinPad({
   mode = 'verify',
   verify,
   onSuccess,
+  onLockout,
   onCreate,
 }: PinPadProps) {
   const [pin, setPin] = useState('')
@@ -64,8 +71,14 @@ export function PinPad({
         }
         // Step 2 — confirm match.
         if (pin === firstPin) {
-          await onCreate?.(pin)
-          // Parent will typically close/navigate; leave busy to avoid re-fire.
+          try {
+            await onCreate?.(pin)
+            // Parent will typically close/navigate; leave busy to avoid re-fire.
+          } catch (e) {
+            if (cancelled) return
+            fail(e instanceof Error ? e.message : 'Could not save the PIN.')
+            setFirstPin(null)
+          }
         } else {
           fail('PINs did not match. Try again.')
           setFirstPin(null)
@@ -73,13 +86,32 @@ export function PinPad({
         return
       }
 
-      // verify mode
-      const ok = await Promise.resolve(verify?.(pin) ?? false)
+      // verify mode — the verdict comes from the server.
+      const result: PinVerifyResult = verify
+        ? await verify(pin)
+        : { status: 'error' }
       if (cancelled) return
-      if (ok) {
-        onSuccess?.()
-      } else {
-        fail('Wrong PIN. Try again.')
+
+      switch (result.status) {
+        case 'valid':
+          onSuccess?.()
+          return
+        case 'rate_limited':
+          // Freeze the pad and hand the lockout to the caller, which parks the
+          // countdown on the member's tile.
+          setShake(true)
+          setPin('')
+          setError('Too many attempts, try again in a moment')
+          onLockout?.(result.retryAfter)
+          return
+        case 'error':
+          fail('Unable to verify PIN — check your connection')
+          return
+        case 'no_pin_set':
+          fail('No PIN set for this member. Ask a parent to set one up.')
+          return
+        default:
+          fail('Wrong PIN. Try again.')
       }
     }
 

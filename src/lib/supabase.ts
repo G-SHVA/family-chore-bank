@@ -10,6 +10,12 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
+// Exported for the Edge Function calls in familyService: PIN verification goes
+// over plain fetch so the real HTTP status (401 / 409 / 429) is visible, which
+// supabase-js' functions.invoke() buries inside an error object.
+export const SUPABASE_URL = supabaseUrl
+export const SUPABASE_ANON_KEY = supabaseAnonKey
+
 // Single long-lived client for the kiosk. The device authenticates once as a
 // parent/admin; the refresh token keeps the session alive across reloads and
 // reboots. Child/parent "identity" within the kiosk is app state, not a new
