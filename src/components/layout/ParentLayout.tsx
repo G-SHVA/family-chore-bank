@@ -32,50 +32,54 @@ export function ParentLayout() {
   }
 
   return (
-    <div className="flex min-h-screen bg-bg">
+    <div className="flex h-screen overflow-hidden bg-bg">
       {/* Sidebar */}
-      <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-deep">
-        <div className="spine flex items-center gap-3 px-5 py-5">
-          <img src="/logo.png" alt="" className="h-10 w-10" />
-          <span className="display text-xl text-antique">{family?.name ?? 'Chore Bank'}</span>
+      <aside className="flex w-16 shrink-0 flex-col border-r border-line bg-deep sm:w-64">
+        <div className="spine flex items-center justify-center gap-3 px-2 py-5 sm:justify-start sm:px-5">
+          <img src="/logo.png" alt="" className="h-10 w-10 shrink-0" />
+          <span className="display hidden text-xl text-antique sm:inline">
+            {family?.name ?? 'Chore Bank'}
+          </span>
         </div>
 
-        <nav className="flex flex-1 flex-col gap-1 p-4">
+        <nav className="flex flex-1 flex-col gap-1 p-2 sm:p-4">
           {items.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.end}
+              title={item.label}
               className={({ isActive }) =>
                 cn(
-                  'label-caps flex min-h-touch items-center gap-3 rounded-input border-l-2 px-4 text-xs',
+                  'label-caps flex min-h-touch items-center justify-center gap-3 rounded-input border-l-2 text-xs sm:justify-start sm:px-4',
                   isActive
                     ? 'border-antique bg-wash text-antique'
                     : 'border-transparent text-text-muted hover:bg-wash hover:text-text'
                 )
               }
             >
-              <item.icon className="h-6 w-6" />
-              {item.label}
+              <item.icon className="h-6 w-6 shrink-0" />
+              <span className="hidden sm:inline">{item.label}</span>
             </NavLink>
           ))}
         </nav>
 
-        <div className="mt-4 border-t border-line p-4">
-          <div className="label-caps px-2 pb-3 text-[10px] text-text-muted">
+        <div className="mt-4 border-t border-line p-2 sm:p-4">
+          <div className="label-caps hidden px-2 pb-3 text-[10px] text-text-muted sm:block">
             Signed in as <span className="text-antique">{activeMember.display_name}</span>
           </div>
           <button
             onClick={handleExit}
-            className="label-caps flex min-h-touch w-full items-center gap-3 rounded-input px-4 text-xs text-text-muted hover:bg-wash hover:text-text"
+            title="Switch user"
+            className="label-caps flex min-h-touch w-full items-center justify-center gap-3 rounded-input text-xs text-text-muted hover:bg-wash hover:text-text sm:justify-start sm:px-4"
           >
-            <LogOut className="h-6 w-6" />
-            <span>Switch user</span>
+            <LogOut className="h-6 w-6 shrink-0" />
+            <span className="hidden sm:inline">Switch user</span>
           </button>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto p-8">
+      <main className="scroll-skin flex-1 overflow-y-auto p-4 sm:p-8">
         <Outlet />
       </main>
     </div>

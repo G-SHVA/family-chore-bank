@@ -439,11 +439,13 @@ export async function approveChore(assignmentId: string, parentMemberId: string)
   if (error) throw error
 }
 
-/** Reject a completed chore with a note (no balance change). */
-export async function rejectChore(assignmentId: string, notes: string): Promise<void> {
+/** Reject a completed chore. The note is optional (no balance change). */
+export async function rejectChore(assignmentId: string, notes?: string): Promise<void> {
   const { error } = await supabase
     .from('chore_assignments')
-    .update({ status: 'rejected', notes })
+    // An omitted note is stored as null, not '', so the child's card shows the
+    // plain "Not approved" pill with no empty note block under it.
+    .update({ status: 'rejected', notes: notes?.trim() || null })
     .eq('id', assignmentId)
     .eq('is_template', false)
   if (error) throw error

@@ -90,9 +90,9 @@ export default function ChildDashboard() {
   })
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6 lg:flex-row">
-      {/* Left column: balance + stats */}
-      <div className="flex flex-col gap-4 lg:w-2/5">
+    <div className="mx-auto flex h-full max-w-5xl flex-col gap-6 overflow-hidden lg:flex-row">
+      {/* Zone 1 — static header: balance + the four stat cards never scroll. */}
+      <div className="flex shrink-0 flex-col gap-4 lg:w-2/5">
         <Card>
           <div className="label-caps text-[11px] text-text-muted">Current balance</div>
           <BalanceDisplay
@@ -123,9 +123,9 @@ export default function ChildDashboard() {
         </div>
       </div>
 
-      {/* Right column: chores */}
-      <div className="flex flex-col gap-4 lg:w-3/5">
-        <div className="flex items-center justify-between">
+      {/* Zone 2 — today's chores scroll inside their own contained area. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 lg:w-3/5">
+        <div className="flex shrink-0 items-center justify-between">
           <h2 className="text-2xl text-text">My Chores</h2>
           <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
             {(['all', 'todo', 'pending'] as Filter[]).map((f) => (
@@ -150,7 +150,7 @@ export default function ChildDashboard() {
               : 'No chores here. Nice work! 🎉'}
           </Card>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="scroll-skin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-2">
             <AnimatePresence initial={false}>
               {chores.map((c) => (
                 <ChoreCard

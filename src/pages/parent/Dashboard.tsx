@@ -123,15 +123,15 @@ export default function ParentDashboard() {
   const children = summaries.map((s) => s.member)
 
   return (
-    <div className="flex flex-col gap-6">
-      <h1 className="spine pb-4 text-4xl">Parent Dashboard</h1>
+    <div className="flex h-full flex-col gap-6 overflow-hidden">
+      <h1 className="spine shrink-0 pb-4 text-4xl">Parent Dashboard</h1>
 
       {error && (
-        <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">{error}</div>
+        <div className="shrink-0 rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">{error}</div>
       )}
 
-      {/* Overview stats */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {/* Zone 1 — static header. Overview stats never scroll. */}
+      <div className="grid shrink-0 grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
           <div className="label-caps text-[11px] text-text-muted">Total family balance</div>
           <BalanceDisplay
@@ -150,10 +150,10 @@ export default function ParentDashboard() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-        {/* Approvals queue (prominent) */}
-        <section className="lg:col-span-3">
-          <h2 className="mb-3 text-2xl">
+      <div className="scroll-skin grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto pr-2 lg:grid-cols-5 lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden lg:pr-0">
+        {/* Zone 2 — approvals queue scrolls in its own contained area. */}
+        <section className="flex flex-col lg:col-span-3 lg:min-h-0">
+          <h2 className="mb-3 shrink-0 text-2xl">
             Pending Approvals{' '}
             {approvals.length > 0 && (
               <span className="label-caps ml-1 rounded-input border border-antique/50 px-2 py-0.5 text-xs text-antique">
@@ -167,7 +167,7 @@ export default function ParentDashboard() {
               All caught up — nothing to approve.
             </Card>
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="scroll-skin flex flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-2">
               <AnimatePresence initial={false}>
                 {approvals.map((a) => (
                   <motion.div
@@ -176,10 +176,10 @@ export default function ParentDashboard() {
                     exit={{ opacity: 0, x: 40 }}
                     transition={{ duration: 0.2 }}
                   >
-                    <Card className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-center gap-3">
+                    <Card className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="flex min-w-0 items-center gap-3">
                         <Avatar member={a.member} />
-                        <div>
+                        <div className="min-w-0">
                           <div className="display text-lg text-text">{a.chore?.title}</div>
                           <div className="text-sm text-text-muted">
                             {a.member?.display_name} ·{' '}
@@ -192,7 +192,7 @@ export default function ParentDashboard() {
                           </div>
                         </div>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
                         <Button
                           size="lg"
                           variant="primaryList"
@@ -219,7 +219,7 @@ export default function ParentDashboard() {
         </section>
 
         {/* Right column: child cards + quick add */}
-        <div className="flex flex-col gap-6 lg:col-span-2">
+        <div className="scroll-skin flex flex-col gap-6 lg:col-span-2 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
           <section>
             <h2 className="mb-3 text-2xl">Children</h2>
             <div className="flex flex-col gap-3">
@@ -302,22 +302,27 @@ function RejectModal({
   }, [approval])
   return (
     <Modal open={!!approval} onClose={onClose} title="Reject chore">
-      <p className="mb-3 text-text-muted">
-        Let {approval?.member?.display_name} know why “{approval?.chore?.title}” wasn’t approved.
+      <p className="mb-4 text-text-muted">
+        “{approval?.chore?.title}” will be sent back to {approval?.member?.display_name}.
       </p>
+      <label htmlFor="reject-note" className="label-caps mb-2 block text-[11px] text-text-muted">
+        Add a note (optional)
+      </label>
       <textarea
+        id="reject-note"
         value={note}
         onChange={(e) => setNote(e.target.value)}
         rows={3}
-        placeholder="e.g. Please redo — the room still needs tidying."
+        placeholder="Let them know what needs improvement..."
         className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
       />
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
           Cancel
         </Button>
-        <Button variant="danger" onClick={() => onSubmit(note.trim())} disabled={!note.trim()}>
-          Reject with note
+        {/* No note is a valid rejection — the button never blocks on one. */}
+        <Button variant="danger" onClick={() => onSubmit(note.trim())}>
+          {note.trim() ? 'Reject with note' : 'Reject'}
         </Button>
       </div>
     </Modal>

@@ -34,7 +34,7 @@ export function ChildLayout() {
   }
 
   return (
-    <div data-surface="child" className="flex min-h-screen flex-col bg-bg">
+    <div data-surface="child" className="flex h-screen flex-col overflow-hidden bg-bg">
       <header className="spine relative flex items-center justify-between px-6 py-4">
         <div>
           <div className="label-caps text-[11px] text-text-muted">{greeting()}</div>
@@ -54,7 +54,7 @@ export function ChildLayout() {
         </button>
       </header>
 
-      <main className="flex-1 px-6 pb-28">
+      <main className="scroll-skin flex-1 overflow-y-auto px-6 pb-28">
         <Outlet />
       </main>
 
