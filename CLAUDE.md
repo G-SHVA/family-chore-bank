@@ -120,6 +120,18 @@ bug. Do not chase without a reason.
   CASCADE: deleting a library chore would wipe the child's earned-chore history.
   Archive chores that have been used; hard delete only works when unused.
 
+### SCHEMA FACTS — MONEY PATH
+- chore_approval_balance_update trigger is AFTER UPDATE only. Inserting a row
+  with status='approved' credits nothing. Balance only moves on UPDATE from a
+  non-approved status to approved. Always use the insert-as-completed +
+  approve_chore RPC sequence for direct credits.
+- chores.created_by references auth.users(id) NOT family_members(id).
+  chore_assignments.assigned_by and approved_by reference family_members(id).
+  Do not mix these FKs.
+- 'direct-award' is a reserved category in the chores table. Rows with this
+  category are one-off award receipts and are excluded from getFamilyChores()
+  and all library views. Never use this category for real chores.
+
 ## Kiosk rules
 - All touch targets minimum 64px
 - Support both landscape and portrait
