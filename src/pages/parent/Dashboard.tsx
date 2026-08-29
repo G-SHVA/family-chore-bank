@@ -8,6 +8,8 @@ import {
   approveChore,
   rejectChore,
   quickAssignChore,
+  directAwardFromLibrary,
+  directAwardCustom,
   getFamilyChores,
   getFamilyChildSummaries,
   type PendingApproval,
@@ -260,6 +262,7 @@ export default function ParentDashboard() {
             chores={chores}
             expenses={expenses}
             currency={currency}
+            familyId={familyId ?? ''}
             assignedBy={activeMember?.id ?? ''}
             onDone={() => Promise.all([load(), refresh()])}
           />
@@ -334,6 +337,7 @@ function QuickAdd({
   chores,
   expenses,
   currency,
+  familyId,
   assignedBy,
   onDone,
 }: {
@@ -341,57 +345,115 @@ function QuickAdd({
   chores: Chore[]
   expenses: Expense[]
   currency: string
+  familyId: string
   assignedBy: string
   onDone: () => Promise<unknown>
 }) {
-  const [mode, setMode] = useState<'chore' | 'expense'>('chore')
+  const [mode, setMode] = useState<'chore' | 'expense' | 'award'>('chore')
   const [childId, setChildId] = useState('')
   const [itemId, setItemId] = useState('')
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Direct Award state, kept separate from itemId so switching tabs never
+  // carries a half-filled award over into an assignment.
+  const [source, setSource] = useState<'library' | 'custom'>('library')
+  const [awardChoreId, setAwardChoreId] = useState('')
+  const [quantity, setQuantity] = useState(1)
+  const [customTitle, setCustomTitle] = useState('')
+  const [customAmount, setCustomAmount] = useState('')
+  const [note, setNote] = useState('')
+
+  const awardChore = chores.find((c) => c.id === awardChoreId)
+  const parsedAmount = Number.parseFloat(customAmount)
+  const customValid =
+    customTitle.trim().length > 0 && Number.isFinite(parsedAmount) && parsedAmount > 0
+  const awardTotal =
+    source === 'library' ? (awardChore?.value ?? 0) * quantity : customValid ? parsedAmount : 0
+  const awardReady = !!childId && (source === 'library' ? !!awardChoreId : customValid)
+
+  function resetAward() {
+    setSource('library')
+    setAwardChoreId('')
+    setQuantity(1)
+    setCustomTitle('')
+    setCustomAmount('')
+    setNote('')
+  }
 
   async function submit() {
-    if (!childId || !itemId) return
     setBusy(true)
     setDone(null)
+    setError(null)
     try {
-      if (mode === 'chore') await quickAssignChore(itemId, childId, assignedBy)
-      else await applyExpense(itemId, childId)
-      await onDone()
-      setDone(mode === 'chore' ? 'Chore assigned to the roster.' : 'Expense applied.')
-      setItemId('')
+      if (mode === 'award') {
+        const childName = children.find((c) => c.id === childId)?.display_name ?? 'them'
+        const credited = formatCurrency(awardTotal, currency)
+        if (source === 'library') {
+          await directAwardFromLibrary(awardChoreId, childId, assignedBy, quantity, note)
+        } else {
+          await directAwardCustom(familyId, childId, assignedBy, customTitle, parsedAmount, note)
+        }
+        await onDone()
+        setDone(`Awarded ${credited} to ${childName}.`)
+        resetAward()
+      } else if (mode === 'chore') {
+        await quickAssignChore(itemId, childId, assignedBy)
+        await onDone()
+        setDone('Chore assigned to the roster.')
+        setItemId('')
+      } else {
+        await applyExpense(itemId, childId)
+        await onDone()
+        setDone('Expense applied.')
+        setItemId('')
+      }
+    } catch (e) {
+      // Awards move real money, so a failure has to be visible rather than a
+      // silently rejected promise.
+      setError(e instanceof Error ? e.message : 'That did not go through.')
     } finally {
       setBusy(false)
     }
   }
 
-  const selectClass =
+  const fieldClass =
     'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
+  const labelClass = 'label-caps mb-2 block text-[11px] text-text-muted'
+
+  const tabs = [
+    { key: 'chore', label: 'Assign Chore' },
+    { key: 'expense', label: 'Add Expense' },
+    { key: 'award', label: 'Direct Award' },
+  ] as const
 
   return (
     <section>
       <h2 className="mb-3 text-2xl">Quick Add</h2>
       <Card className="flex flex-col gap-3">
         <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
-          {(['chore', 'expense'] as const).map((m) => (
+          {tabs.map((t) => (
             <button
-              key={m}
+              key={t.key}
               onClick={() => {
-                setMode(m)
+                setMode(t.key)
                 setItemId('')
                 setDone(null)
+                setError(null)
+                resetAward()
               }}
               className={cn(
-                'label-caps flex-1 rounded-input py-2 text-[11px]',
-                mode === m ? 'bg-wash text-antique' : 'text-text-muted'
+                'label-caps flex-1 rounded-input px-1 py-2 text-[11px]',
+                mode === t.key ? 'bg-wash text-antique' : 'text-text-muted'
               )}
             >
-              {m === 'chore' ? 'Assign Chore' : 'Add Expense'}
+              {t.label}
             </button>
           ))}
         </div>
 
-        <select value={childId} onChange={(e) => setChildId(e.target.value)} className={selectClass}>
+        <select value={childId} onChange={(e) => setChildId(e.target.value)} className={fieldClass}>
           <option value="">Select child…</option>
           {children.map((c) => (
             <option key={c.id} value={c.id}>
@@ -400,25 +462,157 @@ function QuickAdd({
           ))}
         </select>
 
-        <select value={itemId} onChange={(e) => setItemId(e.target.value)} className={selectClass}>
-          <option value="">{mode === 'chore' ? 'Select chore…' : 'Select expense…'}</option>
-          {mode === 'chore'
-            ? chores.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title} · {formatCurrency(c.value, currency)} · {c.frequency}
-                </option>
-              ))
-            : expenses.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.title} · {formatCurrency(e.amount, currency)}
-                </option>
+        {mode === 'award' ? (
+          <>
+            <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
+              {(['library', 'custom'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => {
+                    setSource(s)
+                    setDone(null)
+                    setError(null)
+                  }}
+                  className={cn(
+                    'label-caps flex-1 rounded-input py-2 text-[11px]',
+                    source === s ? 'bg-wash text-antique' : 'text-text-muted'
+                  )}
+                >
+                  {s === 'library' ? 'From Library' : 'Custom Amount'}
+                </button>
               ))}
-        </select>
+            </div>
 
-        <Button variant="accent" fullWidth size="lg" onClick={submit} disabled={!childId || !itemId || busy}>
-          {busy ? 'Working…' : mode === 'chore' ? 'Assign Chore' : 'Apply Expense'}
-        </Button>
+            {source === 'library' ? (
+              <>
+                <select
+                  value={awardChoreId}
+                  onChange={(e) => setAwardChoreId(e.target.value)}
+                  className={fieldClass}
+                >
+                  <option value="">Select chore…</option>
+                  {chores.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title} · {formatCurrency(c.value, currency)}
+                    </option>
+                  ))}
+                </select>
+
+                <div>
+                  <label htmlFor="award-qty" className={labelClass}>
+                    How many?
+                  </label>
+                  <input
+                    id="award-qty"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={10}
+                    value={quantity}
+                    onChange={(e) => {
+                      const n = Number.parseInt(e.target.value, 10)
+                      setQuantity(Number.isNaN(n) ? 1 : Math.min(10, Math.max(1, n)))
+                    }}
+                    className={cn(fieldClass, 'min-h-touch')}
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label htmlFor="award-desc" className={labelClass}>
+                    Description
+                  </label>
+                  <input
+                    id="award-desc"
+                    type="text"
+                    value={customTitle}
+                    onChange={(e) => setCustomTitle(e.target.value)}
+                    placeholder="Received an A on assignment"
+                    className={cn(fieldClass, 'min-h-touch')}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="award-amount" className={labelClass}>
+                    Amount
+                  </label>
+                  <input
+                    id="award-amount"
+                    type="number"
+                    inputMode="decimal"
+                    min="0.01"
+                    step="0.01"
+                    value={customAmount}
+                    onChange={(e) => setCustomAmount(e.target.value)}
+                    placeholder="0.00"
+                    className={cn(fieldClass, 'min-h-touch')}
+                  />
+                </div>
+              </>
+            )}
+
+            <div>
+              <label htmlFor="award-note" className={labelClass}>
+                Add a note (optional)
+              </label>
+              <textarea
+                id="award-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={2}
+                placeholder="e.g. Math test, received an A"
+                className={fieldClass}
+              />
+            </div>
+
+            <p className="text-center text-lg text-text">
+              Total award:{' '}
+              <span className="display font-semibold text-antique">
+                {formatCurrency(awardTotal, currency)}
+              </span>
+            </p>
+
+            <Button
+              variant="accent"
+              fullWidth
+              size="lg"
+              onClick={submit}
+              disabled={!awardReady || busy}
+            >
+              {busy ? 'Working…' : 'Award'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <select value={itemId} onChange={(e) => setItemId(e.target.value)} className={fieldClass}>
+              <option value="">{mode === 'chore' ? 'Select chore…' : 'Select expense…'}</option>
+              {mode === 'chore'
+                ? chores.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title} · {formatCurrency(c.value, currency)} · {c.frequency}
+                    </option>
+                  ))
+                : expenses.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.title} · {formatCurrency(e.amount, currency)}
+                    </option>
+                  ))}
+            </select>
+
+            <Button
+              variant="accent"
+              fullWidth
+              size="lg"
+              onClick={submit}
+              disabled={!childId || !itemId || busy}
+            >
+              {busy ? 'Working…' : mode === 'chore' ? 'Assign Chore' : 'Apply Expense'}
+            </Button>
+          </>
+        )}
+
         {done && <p className="text-center text-sm text-green">{done}</p>}
+        {error && <p className="text-center text-sm text-danger">{error}</p>}
       </Card>
     </section>
   )

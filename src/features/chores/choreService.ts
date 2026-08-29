@@ -499,6 +499,151 @@ export async function assignChoreToMembers(
   if (error) throw error
 }
 
+/**
+ * Marker category for the throwaway `chores` rows created by a custom-amount
+ * Direct Award. It is outside CHORE_CATEGORIES and has no CHECK constraint to
+ * collide with, so it can never be a parent-authored chore. Excluded from
+ * getFamilyChores, which is the single door every library view goes through.
+ */
+export const DIRECT_AWARD_CATEGORY = 'direct-award'
+
+/**
+ * Supabase rejects with a PostgrestError — a plain object, NOT an Error — so a
+ * caller's `e instanceof Error` check is false and the real reason is replaced
+ * by a generic fallback. That is tolerable on a read; on the award path it is
+ * not, because the message is the only clue the parent (or a developer) gets
+ * about why money did not move. A 409 here once turned out to be a foreign-key
+ * violation and read only as "That did not go through".
+ *
+ * Scoped deliberately to Direct Award: the rest of the codebase keeps its
+ * existing convention.
+ */
+function awardError(error: unknown, context: string): Error {
+  if (error instanceof Error) return new Error(`${context}: ${error.message}`)
+  const e = (error ?? {}) as { message?: string; details?: string; hint?: string; code?: string }
+  const detail = [e.message, e.details, e.hint].filter(Boolean).join(' — ')
+  const code = e.code ? ` [${e.code}]` : ''
+  return new Error(`${context}: ${detail || 'unknown database error'}${code}`)
+}
+
+/**
+ * Credits one award to a child and returns nothing.
+ *
+ * The money is NEVER touched here. chore_approval_balance_update is an
+ * AFTER UPDATE trigger (`NEW.status = 'approved' AND OLD.status != 'approved'`),
+ * so a row inserted already-approved would credit $0. The row is therefore
+ * inserted as 'completed' and immediately flipped by the approve_chore RPC —
+ * the same call the approval queue makes — which fires the trigger and
+ * advances milestone_progress.
+ *
+ * If the RPC leg fails the row is left as a normal completed chore in the
+ * parent's approval queue: visible and recoverable with one tap, not lost money.
+ */
+async function awardOnce(
+  choreId: string,
+  memberId: string,
+  awardedBy: string,
+  notes?: string | null
+): Promise<void> {
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .insert({
+      chore_id: choreId,
+      assigned_to: memberId,
+      assigned_by: awardedBy,
+      status: 'completed',
+      completed_at: now,
+      // A real due_date matters: under `order('due_date', desc)` Postgres sorts
+      // NULLS FIRST, so a null-dated award would squat at the top of the capped
+      // instance window and push live chores out of it.
+      due_date: now,
+      is_template: false,
+      is_active: true,
+      notes: notes?.trim() || null,
+    })
+    .select('id')
+    .single()
+  if (error) throw awardError(error, 'Could not record the award')
+
+  const { error: rpcError } = await supabase.rpc('approve_chore', {
+    p_assignment_id: data.id,
+    p_approved_by: awardedBy,
+  })
+  // The row exists but is unapproved — say so, because it is now sitting in the
+  // approval queue and one tap finishes it.
+  if (rpcError) {
+    throw awardError(
+      rpcError,
+      'The award was recorded but crediting it failed; it is waiting in the approval queue'
+    )
+  }
+}
+
+/**
+ * Direct Award, library path: credit an existing chore `quantity` times.
+ * Each unit is its own assignment row and its own approve_chore call, so the
+ * ledger reads "Received an A" three times rather than one entry worth 3x.
+ */
+export async function directAwardFromLibrary(
+  choreId: string,
+  memberId: string,
+  awardedBy: string,
+  quantity = 1,
+  notes?: string | null
+): Promise<void> {
+  const units = Math.min(10, Math.max(1, Math.floor(quantity)))
+  for (let i = 0; i < units; i++) {
+    try {
+      await awardOnce(choreId, memberId, awardedBy, notes)
+    } catch (e) {
+      // Partial success is worth reporting precisely — the units already
+      // credited are real money and must not be retried blindly.
+      if (i === 0) throw e
+      throw new Error(
+        `Awarded ${i} of ${units}. The rest failed: ${e instanceof Error ? e.message : 'unknown error'}`
+      )
+    }
+  }
+}
+
+/**
+ * Direct Award, custom path: a one-off amount with a parent-typed description.
+ *
+ * chore_assignments has no amount or title column — both the balance trigger
+ * and the bank ledger read them off the joined `chores` row — so the award
+ * needs a chore to point at. It gets an archived, marker-category row that no
+ * library view returns and no roster can assign. Custom awards are one-time by
+ * definition, so there is no quantity.
+ */
+export async function directAwardCustom(
+  familyId: string,
+  memberId: string,
+  awardedBy: string,
+  title: string,
+  amount: number,
+  notes?: string | null
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('chores')
+    .insert({
+      family_id: familyId,
+      title: title.trim(),
+      value: amount,
+      frequency: 'once',
+      category: DIRECT_AWARD_CATEGORY,
+      is_template: false,
+      is_custom: true,
+      is_archived: true,
+      // created_by is deliberately omitted: it references auth.users(id), not
+      // family_members(id), and createChore leaves it null the same way.
+    })
+    .select('id')
+    .single()
+  if (error) throw awardError(error, 'Could not create the one-off award')
+  await awardOnce(data.id, memberId, awardedBy, notes)
+}
+
 export interface ChildSummary {
   member: FamilyMember
   weeklyEarnings: number
@@ -645,6 +790,10 @@ export async function getFamilyChores(
     .select('*')
     .eq('family_id', familyId)
     .eq('is_template', false)
+    // Direct Award's one-off rows are bookkeeping, not library chores. Filtered
+    // here so every consumer — including ChoresTab's "show archived" view —
+    // stays clean without each one remembering to exclude them.
+    .neq('category', DIRECT_AWARD_CATEGORY)
   if (!includeArchived) query = query.eq('is_archived', false)
   const { data, error } = await query.order('title')
   if (error) throw error
