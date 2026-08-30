@@ -28,6 +28,7 @@ import {
   setRosterEntryActive,
   setRosterEntryDay,
   removeRosterEntry,
+  dailyRosterTotal,
   dayLabel,
   DAY_LABELS,
   type ChoreInput,
@@ -41,6 +42,7 @@ import { CHORE_CATEGORIES, FREQUENCIES } from '@/lib/constants'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
+import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { cn, formatCurrency } from '@/lib/utils'
 
 const WEEKLY_MULTIPLIER: Record<string, number> = { daily: 7, weekly: 1, monthly: 0.25, once: 0 }
@@ -164,9 +166,13 @@ export default function ChoresTab() {
       </div>
 
       {/* Current roster */}
-      <section>
-        <h2 className="mb-3 text-2xl">Current roster</h2>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <CollapsibleSection
+        title="Current roster"
+        maxHeight={320}
+        defaultOpen
+        meta={`${activeRoster.length} active`}
+      >
+        <div className="grid grid-cols-1 gap-4 pr-1 lg:grid-cols-2">
           {children.map((child) => (
             <RosterCard
               key={child.id}
@@ -194,46 +200,71 @@ export default function ChoresTab() {
             />
           ))}
         </div>
-      </section>
+      </CollapsibleSection>
 
-      {/* Missed chores */}
-      {missed.length > 0 && (
-        <section>
-          <h2 className="mb-3 text-2xl">Missed chores (last 14 days)</h2>
-          <Card className="flex flex-col gap-2">
-            {missed.slice(0, 12).map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center justify-between gap-3 rounded-input bg-bg px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">{m.chore?.title}</div>
-                  <div className="text-xs text-text-muted">
-                    {m.member?.display_name} ·{' '}
-                    {m.due_date ? new Date(m.due_date).toLocaleDateString() : 'no due date'}
+      {/* Missed chores. Rendered even when empty: a section that vanishes when
+          there is nothing to see makes the tab's shape change under the parent,
+          and "no missed chores" is itself worth reading. */}
+      <CollapsibleSection
+        title="Missed chores (last 14 days)"
+        maxHeight={240}
+        meta={missed.length > 0 ? `${missed.length}` : undefined}
+      >
+        <Card className="flex flex-col gap-2">
+          {missed.length === 0 ? (
+            <p className="py-2 text-sm text-text-muted">
+              Nothing missed in the last 14 days.
+            </p>
+          ) : (
+            <>
+              {missed.map((m) => (
+                <div
+                  key={m.id}
+                  className="flex items-center justify-between gap-3 rounded-input bg-bg px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">{m.chore?.title}</div>
+                    <div className="text-xs text-text-muted">
+                      {m.member?.display_name} ·{' '}
+                      {m.due_date ? new Date(m.due_date).toLocaleDateString() : 'no due date'}
+                    </div>
                   </div>
+                  <span className="shrink-0 rounded-input border border-line px-3 py-1 label-caps text-[10px] text-text-muted">
+                    Expired
+                  </span>
                 </div>
-                <span className="shrink-0 rounded-input border border-line px-3 py-1 label-caps text-[10px] text-text-muted">
-                  Expired
-                </span>
-              </div>
-            ))}
-            {missed.length > 12 && (
-              <p className="px-3 pt-1 text-xs text-text-muted">
-                +{missed.length - 12} more in the last 14 days.
-              </p>
-            )}
-          </Card>
-        </section>
-      )}
+              ))}
+            </>
+          )}
+        </Card>
+      </CollapsibleSection>
 
       {/* Library */}
-      <section>
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-2xl">Chore library</h2>
+      <CollapsibleSection
+        title="Chore library"
+        maxHeight={400}
+        meta={`${visibleChores.length}`}
+        actions={
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-5 w-5" /> Create Chore
           </Button>
+        }
+      >
+        {/* Item 5 — what a day is currently worth for each child. Sits inside
+            the scrolling body, directly above the tiles, so it reads as a
+            property of the library rather than of the whole tab. */}
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          {children.map((child) => (
+            <div key={child.id} className="border border-line bg-card px-3 py-2">
+              <div className="truncate text-xs text-text-muted">{child.display_name}</div>
+              <div className="mt-0.5 text-xs text-text-muted">
+                Daily total:{' '}
+                <span className="font-semibold text-antique">
+                  {formatCurrency(dailyRosterTotal(roster, child.id), currency)}
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
         <div className="mb-4 flex flex-col gap-3 sm:flex-row">
           <div className="relative flex-1">
@@ -258,77 +289,97 @@ export default function ChoresTab() {
               .map((r) => r.member?.display_name)
               .filter(Boolean)
             return (
-              <Card key={c.id} className={cn('flex flex-col gap-3', c.is_archived && 'opacity-60')}>
+              <div
+                key={c.id}
+                className={cn(
+                  // Not <Card>: this tile needs 12px padding and Card is p-5.
+                  // Overriding p-5 through className is a coin-toss on Tailwind
+                  // class order, so the tile owns its own box instead.
+                  'rounded-card border border-line bg-card p-3',
+                  c.is_archived && 'opacity-60'
+                )}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold">{c.title}</span>
+                      <span className="text-sm font-semibold">{c.title}</span>
                       {c.is_custom && (
-                        <span className="label-caps rounded-input border border-antique/40 px-2 py-0.5 text-[10px] text-antique">
+                        <span className="label-caps rounded-input border border-antique/40 px-1.5 py-0.5 text-[9px] text-antique">
                           Custom
                         </span>
                       )}
                       {c.is_archived && (
-                        <span className="rounded-input border border-line px-2 py-0.5 label-caps text-[10px] text-text-muted">
+                        <span className="rounded-input border border-line px-1.5 py-0.5 label-caps text-[9px] text-text-muted">
                           Archived
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 label-caps text-[10px] text-text-muted">
-                      {c.category} · {c.frequency}
-                    </div>
                     {c.description && (
-                      <p className="mt-1 line-clamp-2 text-sm text-text-muted">{c.description}</p>
+                      <p className="mt-1 line-clamp-1 text-xs text-text-muted">{c.description}</p>
                     )}
                     {assignedTo.length > 0 && (
-                      <p className="mt-1 text-xs text-green">Assigned to {assignedTo.join(', ')}</p>
+                      <p className="mt-1 truncate text-[11px] text-green">
+                        Assigned to {assignedTo.join(', ')}
+                      </p>
                     )}
                   </div>
-                  <span className="shrink-0 label-caps rounded-input border border-antique/40 px-3 py-1 text-sm text-antique">
-                    {formatCurrency(c.value, currency)}
-                  </span>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => setEditing(c)}
+                      className="flex h-11 w-11 items-center justify-center rounded-input text-text-muted hover:bg-wash hover:text-text"
+                      aria-label={`Edit ${c.title}`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteRequest(c)}
+                      disabled={busy === c.id}
+                      className="flex h-11 w-11 items-center justify-center rounded-input text-text-muted hover:bg-danger/10 hover:text-danger"
+                      aria-label={`Delete ${c.title}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
+
+                {/* Value, frequency and the action share one row — the Assign
+                    button no longer gets a full-width row of its own. */}
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="label-caps shrink-0 rounded-input border border-antique/40 px-2 py-0.5 text-xs text-antique">
+                      {formatCurrency(c.value, currency)}
+                    </span>
+                    <span className="label-caps truncate text-[10px] text-text-muted">
+                      {c.category} · {c.frequency}
+                    </span>
+                  </div>
                   {c.is_archived ? (
-                    <Button
-                      variant="secondary"
-                      className="flex-1"
+                    <button
                       disabled={busy === c.id}
                       onClick={() =>
                         run(c.id, () => unarchiveChore(c.id), 'Could not restore that chore.')
                       }
+                      className="label-caps flex shrink-0 items-center gap-1.5 rounded-input border border-line px-3 py-1.5 text-[12px] text-text hover:border-antique/40 disabled:opacity-40"
                     >
-                      <ArchiveRestore className="h-5 w-5" /> Restore
-                    </Button>
+                      <ArchiveRestore className="h-4 w-4" /> Restore
+                    </button>
                   ) : (
-                    <Button variant="secondary" className="flex-1" onClick={() => setAssigning(c)}>
-                      <UserPlus className="h-5 w-5" /> Assign
-                    </Button>
+                    <button
+                      onClick={() => setAssigning(c)}
+                      className="label-caps flex shrink-0 items-center gap-1.5 rounded-input border border-line px-3 py-1.5 text-[12px] text-text hover:border-antique/40"
+                    >
+                      <UserPlus className="h-4 w-4" /> Assign
+                    </button>
                   )}
-                  <button
-                    onClick={() => setEditing(c)}
-                    className="flex min-h-touch min-w-touch items-center justify-center rounded-input text-text-muted hover:bg-wash hover:text-text"
-                    aria-label={`Edit ${c.title}`}
-                  >
-                    <Pencil className="h-5 w-5" />
-                  </button>
-                  <button
-                    onClick={() => handleDeleteRequest(c)}
-                    disabled={busy === c.id}
-                    className="flex min-h-touch min-w-touch items-center justify-center rounded-input text-text-muted hover:bg-danger/10 hover:text-danger"
-                    aria-label={`Delete ${c.title}`}
-                  >
-                    <Trash2 className="h-5 w-5" />
-                  </button>
                 </div>
-              </Card>
+              </div>
             )
           })}
         </div>
         {filtered.length === 0 && (
           <p className="py-8 text-center text-text-muted">No chores match that search.</p>
         )}
-      </section>
+      </CollapsibleSection>
 
       {(creating || editing) && (
         <ChoreFormModal

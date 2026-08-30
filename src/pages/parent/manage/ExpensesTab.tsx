@@ -15,6 +15,7 @@ import { CHORE_CATEGORIES } from '@/lib/constants'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
+import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { formatCurrency, timeAgo } from '@/lib/utils'
 
 export default function ExpensesTab() {
@@ -74,11 +75,19 @@ export default function ExpensesTab() {
         </div>
       )}
 
-      {recent.length > 0 && (
-        <section>
-          <h2 className="mb-3 text-2xl">Recent</h2>
-          <Card className="flex flex-col gap-2">
-            {recent.map((r) => (
+      {/* Rendered even when empty, for the same reason as Missed chores on the
+          Chores tab: the tab should not change shape depending on the data. */}
+      <CollapsibleSection
+        title="Recent expenses"
+        maxHeight={280}
+        defaultOpen
+        meta={recent.length > 0 ? `${recent.length}` : undefined}
+      >
+        <Card className="flex flex-col gap-2">
+          {recent.length === 0 ? (
+            <p className="py-2 text-sm text-text-muted">No expenses applied yet.</p>
+          ) : (
+            recent.map((r) => (
               <div key={r.id} className="flex items-center justify-between text-sm">
                 <span className="text-text">
                   {r.expense_title} → {r.member_name}
@@ -90,18 +99,21 @@ export default function ExpensesTab() {
                   {timeAgo(r.applied_at)}
                 </span>
               </div>
-            ))}
-          </Card>
-        </section>
-      )}
+            ))
+          )}
+        </Card>
+      </CollapsibleSection>
 
-      <section>
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-2xl">Expense library</h2>
+      <CollapsibleSection
+        title="Expense library"
+        maxHeight={400}
+        meta={`${expenses.length}`}
+        actions={
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-5 w-5" /> Create Expense
           </Button>
-        </div>
+        }
+      >
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
           <input
@@ -142,7 +154,10 @@ export default function ExpensesTab() {
             </Card>
           ))}
         </div>
-      </section>
+        {filtered.length === 0 && (
+          <p className="py-8 text-center text-text-muted">No expenses match that search.</p>
+        )}
+      </CollapsibleSection>
 
       {creating && (
         <ExpenseFormModal

@@ -4,13 +4,15 @@ import ChoresTab from './manage/ChoresTab'
 import ExpensesTab from './manage/ExpensesTab'
 import MilestonesTab from './manage/MilestonesTab'
 import RewardsTab from './manage/RewardsTab'
+import AnalyticsTab from './manage/AnalyticsTab'
 
-type Tab = 'chores' | 'expenses' | 'milestones' | 'rewards'
+type Tab = 'chores' | 'expenses' | 'milestones' | 'rewards' | 'analytics'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'chores', label: 'Chores' },
   { key: 'expenses', label: 'Expenses' },
   { key: 'milestones', label: 'Milestones' },
   { key: 'rewards', label: 'Rewards' },
+  { key: 'analytics', label: 'Analytics' },
 ]
 
 export default function Management() {
@@ -38,6 +40,7 @@ export default function Management() {
       {tab === 'expenses' && <ExpensesTab />}
       {tab === 'milestones' && <MilestonesTab />}
       {tab === 'rewards' && <RewardsTab />}
+      {tab === 'analytics' && <AnalyticsTab />}
     </div>
   )
 }

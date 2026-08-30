@@ -362,7 +362,26 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
 }
 
 /** Consecutive days (ending today or yesterday) with ≥1 approved chore. */
-function computeStreak(instances: AssignmentWithChore[], now: Date): number {
+/**
+ * Drops Direct Awards, keeping only roster-generated instances.
+ *
+ * A Direct Award is a parent crediting a child, not a chore the child did, so
+ * it must never extend a streak — otherwise a parent can hand out a streak.
+ * Roster instances always carry the template_id they were built from (see
+ * buildInstance); an award is inserted standalone and leaves it null.
+ *
+ * Every streak reading in the app runs through this, so the parent dashboard,
+ * the child's Achievements screen and the Analytics tab cannot drift apart.
+ * analyticsService enforces the same rule at the query level, where it can.
+ *
+ * Money is deliberately NOT filtered this way: an award is real earnings and
+ * still counts toward balances, weekly totals and lifetime earned.
+ */
+function rosterInstancesOnly<T extends { template_id: string | null }>(rows: T[]): T[] {
+  return rows.filter((r) => r.template_id !== null)
+}
+
+export function computeStreak(instances: AssignmentWithChore[], now: Date): number {
   const approvedDays = new Set<number>()
   for (const i of instances) {
     if (i.status === 'approved' && i.approved_at) {
@@ -651,41 +670,81 @@ export interface ChildSummary {
   pendingCount: number
 }
 
-/** Per-child rollups (weekly earnings, streak, pending count) for the parent view. */
+/**
+ * Per-child rollups (weekly earnings, streak, pending count) for the parent view.
+ *
+ * Three purpose-built reads rather than one broad fetch. The previous version
+ * was a single `select('*, chore:chores(*)').limit(1000)` with no ordering and
+ * no status filter — the truncation bug CLAUDE.md warns about, and it was live:
+ * against 3,300+ instance rows Postgres returned an arbitrary 1,000, so the
+ * dashboard showed Cuddles $3.75 for the week when the true figure was $9.15.
+ * Wrong money on the parent's main screen, drifting between reloads.
+ *
+ * Each query below is safe by construction: bounded by date, aggregated
+ * server-side, or sorted so the rows it actually needs survive the cap.
+ */
 export async function getFamilyChildSummaries(children: FamilyMember[]): Promise<ChildSummary[]> {
   if (children.length === 0) return []
   const now = new Date()
   const ids = children.map((c) => c.id)
-
-  const { data, error } = await supabase
-    .from('chore_assignments')
-    .select('*, chore:chores(*)')
-    .in('assigned_to', ids)
-    .eq('is_template', false)
-    .limit(1000)
-  if (error) throw error
-  const instances = (data ?? []) as AssignmentWithChore[]
-
   const weekStart = startOfWeek(now)
   const weekEnd = endOfWeek(now)
 
-  return children.map((member) => {
-    const mine = instances.filter((i) => i.assigned_to === member.id)
-    const weeklyEarnings = mine
-      .filter((i) => {
-        if (i.status !== 'approved' || !i.approved_at) return false
-        const d = new Date(i.approved_at)
-        return d >= weekStart && d <= weekEnd
-      })
-      .reduce((sum, i) => sum + (i.chore?.value ?? 0), 0)
-    const pendingCount = mine.filter((i) => i.status === 'completed').length
-    return {
-      member,
-      weeklyEarnings,
-      currentStreak: computeStreak(mine, now),
-      pendingCount,
-    }
-  })
+  const [weekRes, streakRes, pendingCounts] = await Promise.all([
+    // Bounded by the week window, so it cannot outgrow a page.
+    supabase
+      .from('chore_assignments')
+      .select('assigned_to, chore:chores(value)')
+      .in('assigned_to', ids)
+      .eq('is_template', false)
+      .eq('status', 'approved')
+      .gte('approved_at', weekStart.toISOString())
+      .lte('approved_at', weekEnd.toISOString()),
+    // A streak only ever walks backwards from today, so DESC ordering keeps the
+    // rows it can use inside the cap. Direct Awards are excluded at the query
+    // level — see rosterInstancesOnly for why a parent must not hand out a streak.
+    supabase
+      .from('chore_assignments')
+      .select('assigned_to, status, approved_at, template_id')
+      .in('assigned_to', ids)
+      .eq('is_template', false)
+      .eq('status', 'approved')
+      .not('template_id', 'is', null)
+      .not('approved_at', 'is', null)
+      .order('approved_at', { ascending: false })
+      .limit(1000),
+    // Exact counts from Postgres; head:true transfers no rows at all.
+    Promise.all(
+      ids.map((id) =>
+        supabase
+          .from('chore_assignments')
+          .select('*', { count: 'exact', head: true })
+          .eq('assigned_to', id)
+          .eq('is_template', false)
+          .eq('status', 'completed')
+      )
+    ),
+  ])
+
+  if (weekRes.error) throw weekRes.error
+  if (streakRes.error) throw streakRes.error
+  for (const r of pendingCounts) if (r.error) throw r.error
+
+  type WeekRow = { assigned_to: string; chore: { value: number } | null }
+  const weekRows = (weekRes.data ?? []) as unknown as WeekRow[]
+  const streakRows = (streakRes.data ?? []) as unknown as AssignmentWithChore[]
+
+  return children.map((member, idx) => ({
+    member,
+    weeklyEarnings: weekRows
+      .filter((r) => r.assigned_to === member.id)
+      .reduce((sum, r) => sum + (r.chore?.value ?? 0), 0),
+    currentStreak: computeStreak(
+      streakRows.filter((r) => r.assigned_to === member.id),
+      now
+    ),
+    pendingCount: pendingCounts[idx].count ?? 0,
+  }))
 }
 
 export interface AchievementsOverview {
@@ -718,11 +777,14 @@ export async function getAchievementsOverview(memberId: string): Promise<Achieve
   const completionRate =
     counts.total > 0 ? Math.round((counts.done / counts.total) * 100) : 0
 
+  // Streaks only: totalEarned / monthEarned above intentionally still include
+  // Direct Awards, because an award is real money the child earned.
+  const streakRows = rosterInstancesOnly(approved)
   const approvedDays = new Set<number>()
-  for (const i of approved) {
+  for (const i of streakRows) {
     if (i.approved_at) approvedDays.add(startOfDay(new Date(i.approved_at)).getTime())
   }
-  const currentStreak = computeStreak(approved, now)
+  const currentStreak = computeStreak(streakRows, now)
   const longestStreak = computeLongestStreak(approvedDays)
 
   // Last 7 days (oldest -> newest) count of approved chores per day.
@@ -748,7 +810,7 @@ export async function getAchievementsOverview(memberId: string): Promise<Achieve
   }
 }
 
-function computeLongestStreak(approvedDays: Set<number>): number {
+export function computeLongestStreak(approvedDays: Set<number>): number {
   if (approvedDays.size === 0) return 0
   const days = [...approvedDays].sort((a, b) => a - b)
   const DAY = 24 * 60 * 60 * 1000
@@ -908,6 +970,30 @@ export async function getRoster(): Promise<RosterEntry[]> {
     .order('created_at', { ascending: true })
   if (error) throw error
   return (data ?? []) as unknown as RosterEntry[]
+}
+
+/**
+ * Sum of the *daily* chore values on one child's live roster — what they can
+ * earn in a single day if every daily chore gets done.
+ *
+ * Weekly/monthly/once entries are deliberately excluded: this answers "how much
+ * is a day worth", which is the number a parent needs when deciding whether to
+ * add one more chore. ChoresTab's "Potential weekly" stat is the other question
+ * and keeps its own WEEKLY_MULTIPLIER.
+ *
+ * Pure over rows already fetched by getRoster(), so it issues no query and can
+ * be recomputed freely as the roster changes.
+ */
+export function dailyRosterTotal(roster: RosterEntry[], memberId: string): number {
+  return roster
+    .filter(
+      (r) =>
+        r.assigned_to === memberId &&
+        r.is_template &&
+        r.is_active &&
+        r.chore?.frequency === 'daily'
+    )
+    .reduce((sum, r) => sum + (r.chore?.value ?? 0), 0)
 }
 
 /**

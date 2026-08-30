@@ -12,8 +12,11 @@ import {
   directAwardCustom,
   getFamilyChores,
   getFamilyChildSummaries,
+  getRoster,
+  dailyRosterTotal,
   type PendingApproval,
   type ChildSummary,
+  type RosterEntry,
 } from '@/features/chores/choreService'
 import {
   getFamilyExpenses,
@@ -39,6 +42,7 @@ export default function ParentDashboard() {
   const [summaries, setSummaries] = useState<ChildSummary[]>([])
   const [chores, setChores] = useState<Chore[]>([])
   const [expenses, setExpenses] = useState<Expense[]>([])
+  const [roster, setRoster] = useState<RosterEntry[]>([])
   const [recentExpenseCount, setRecentExpenseCount] = useState(0)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejecting, setRejecting] = useState<PendingApproval | null>(null)
@@ -54,18 +58,22 @@ export default function ParentDashboard() {
       await generateDailyAssignments()
       const members = await getActiveMembers(familyId)
       const children = members.filter(isChild)
-      const [pa, sums, ch, ex, recent] = await Promise.all([
+      const [pa, sums, ch, ex, recent, ros] = await Promise.all([
         getPendingApprovals(),
         getFamilyChildSummaries(children),
         getFamilyChores(familyId),
         getFamilyExpenses(familyId),
         getRecentExpenseApplications(50),
+        // Powers the Quick Add daily-total readout: what a child's day is
+        // already worth before this assignment lands on it.
+        getRoster(),
       ])
       setApprovals(pa)
       setSummaries(sums)
       setChores(ch)
       setExpenses(ex)
       setRecentExpenseCount(recent.length)
+      setRoster(ros)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load dashboard.')
     } finally {
@@ -261,6 +269,7 @@ export default function ParentDashboard() {
             children={children}
             chores={chores}
             expenses={expenses}
+            roster={roster}
             currency={currency}
             familyId={familyId ?? ''}
             assignedBy={activeMember?.id ?? ''}
@@ -336,6 +345,7 @@ function QuickAdd({
   children,
   chores,
   expenses,
+  roster,
   currency,
   familyId,
   assignedBy,
@@ -344,6 +354,7 @@ function QuickAdd({
   children: FamilyMember[]
   chores: Chore[]
   expenses: Expense[]
+  roster: RosterEntry[]
   currency: string
   familyId: string
   assignedBy: string
@@ -360,23 +371,66 @@ function QuickAdd({
   // carries a half-filled award over into an assignment.
   const [source, setSource] = useState<'library' | 'custom'>('library')
   const [awardChoreId, setAwardChoreId] = useState('')
-  const [quantity, setQuantity] = useState(1)
+  // Held as text, not a number: a number state can't represent "the field is
+  // empty", so backspacing snapped straight back to 1 and the parent could
+  // never clear it (they had to select-all and overtype).
+  const [quantity, setQuantity] = useState('1')
   const [customTitle, setCustomTitle] = useState('')
   const [customAmount, setCustomAmount] = useState('')
   const [note, setNote] = useState('')
 
   const awardChore = chores.find((c) => c.id === awardChoreId)
   const parsedAmount = Number.parseFloat(customAmount)
+  const parsedQuantity = Number.parseInt(quantity, 10)
+  const quantityValid = Number.isFinite(parsedQuantity) && parsedQuantity >= 1 && parsedQuantity <= 10
   const customValid =
     customTitle.trim().length > 0 && Number.isFinite(parsedAmount) && parsedAmount > 0
   const awardTotal =
-    source === 'library' ? (awardChore?.value ?? 0) * quantity : customValid ? parsedAmount : 0
-  const awardReady = !!childId && (source === 'library' ? !!awardChoreId : customValid)
+    source === 'library'
+      ? (awardChore?.value ?? 0) * (quantityValid ? parsedQuantity : 0)
+      : customValid
+        ? parsedAmount
+        : 0
+
+  /**
+   * The single unmet requirement blocking the Award button, or null when it is
+   * ready. Drives BOTH the disabled state and the message under the button.
+   *
+   * This exists because a disabled button was the whole of the bug: the panel
+   * would print "Total award: $5.55" next to a gold Award button that silently
+   * did nothing, with no clue that the child dropdown up at the top of a
+   * scrolled panel had never been set. Money buttons must say why they refuse.
+   */
+  const awardBlockReason: string | null = !childId
+    ? 'Select a child to award to.'
+    : source === 'library'
+      ? !awardChoreId
+        ? 'Select a chore from the library.'
+        : quantity.trim() === '' || parsedQuantity === 0
+          ? 'Enter a quantity to continue.'
+          : !quantityValid
+            ? 'Quantity must be between 1 and 10.'
+            : null
+      : !customTitle.trim()
+        ? 'Add a description for this award.'
+        : !(Number.isFinite(parsedAmount) && parsedAmount > 0)
+          ? 'Enter an amount greater than zero.'
+          : null
+  const awardReady = awardBlockReason === null
+
+  /** Same contract for the Assign Chore / Add Expense tabs. */
+  const simpleBlockReason: string | null = !childId
+    ? 'Select a child first.'
+    : !itemId
+      ? mode === 'chore'
+        ? 'Select a chore to assign.'
+        : 'Select an expense to apply.'
+      : null
 
   function resetAward() {
     setSource('library')
     setAwardChoreId('')
-    setQuantity(1)
+    setQuantity('1')
     setCustomTitle('')
     setCustomAmount('')
     setNote('')
@@ -391,7 +445,7 @@ function QuickAdd({
         const childName = children.find((c) => c.id === childId)?.display_name ?? 'them'
         const credited = formatCurrency(awardTotal, currency)
         if (source === 'library') {
-          await directAwardFromLibrary(awardChoreId, childId, assignedBy, quantity, note)
+          await directAwardFromLibrary(awardChoreId, childId, assignedBy, parsedQuantity, note)
         } else {
           await directAwardCustom(familyId, childId, assignedBy, customTitle, parsedAmount, note)
         }
@@ -421,6 +475,39 @@ function QuickAdd({
   const fieldClass =
     'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
   const labelClass = 'label-caps mb-2 block text-[11px] text-text-muted'
+
+  /**
+   * Item 3 — what this child's day is already worth, and what it becomes once
+   * this chore lands. Only meaningful for a daily chore: a weekly or monthly one
+   * doesn't move the daily figure, so it says so rather than printing a total
+   * that silently didn't change.
+   */
+  const selectedChild = children.find((c) => c.id === childId)
+  const selectedChore = chores.find((c) => c.id === itemId)
+  const dailyReadout =
+    mode === 'chore' && selectedChild && selectedChore ? (
+      <div className="rounded-input border border-line bg-deep px-3 py-2 text-xs text-text-muted">
+        <div>
+          {selectedChild.display_name}'s current daily total:{' '}
+          <span className="font-semibold text-antique">
+            {formatCurrency(dailyRosterTotal(roster, selectedChild.id), currency)}
+          </span>
+        </div>
+        {selectedChore.frequency === 'daily' ? (
+          <div className="mt-0.5">
+            After this assignment:{' '}
+            <span className="font-semibold text-antique">
+              {formatCurrency(
+                dailyRosterTotal(roster, selectedChild.id) + selectedChore.value,
+                currency
+              )}
+            </span>
+          </div>
+        ) : (
+          <div className="mt-0.5">This is a {selectedChore.frequency} chore.</div>
+        )}
+      </div>
+    ) : null
 
   const tabs = [
     { key: 'chore', label: 'Assign Chore' },
@@ -502,17 +589,18 @@ function QuickAdd({
                   <label htmlFor="award-qty" className={labelClass}>
                     How many?
                   </label>
+                  {/* Deliberately a text input: type="number" bound to a
+                      numeric state was clamped every keystroke, so backspace
+                      could never empty the field. Digits-only is enforced in
+                      onChange; the 1-10 range is enforced by awardBlockReason
+                      rather than by rewriting what the parent is still typing. */}
                   <input
                     id="award-qty"
-                    type="number"
+                    type="text"
                     inputMode="numeric"
-                    min={1}
-                    max={10}
+                    aria-describedby={awardBlockReason ? 'award-block-reason' : undefined}
                     value={quantity}
-                    onChange={(e) => {
-                      const n = Number.parseInt(e.target.value, 10)
-                      setQuantity(Number.isNaN(n) ? 1 : Math.min(10, Math.max(1, n)))
-                    }}
+                    onChange={(e) => setQuantity(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
                     className={cn(fieldClass, 'min-h-touch')}
                   />
                 </div>
@@ -581,6 +669,12 @@ function QuickAdd({
             >
               {busy ? 'Working…' : 'Award'}
             </Button>
+
+            {awardBlockReason && (
+              <p id="award-block-reason" className="text-center text-xs text-text-muted">
+                {awardBlockReason}
+              </p>
+            )}
           </>
         ) : (
           <>
@@ -599,15 +693,21 @@ function QuickAdd({
                   ))}
             </select>
 
+            {dailyReadout}
+
             <Button
               variant="accent"
               fullWidth
               size="lg"
               onClick={submit}
-              disabled={!childId || !itemId || busy}
+              disabled={!!simpleBlockReason || busy}
             >
               {busy ? 'Working…' : mode === 'chore' ? 'Assign Chore' : 'Apply Expense'}
             </Button>
+
+            {simpleBlockReason && (
+              <p className="text-center text-xs text-text-muted">{simpleBlockReason}</p>
+            )}
           </>
         )}
 

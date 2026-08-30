@@ -113,6 +113,36 @@ body {
   .scroll-skin::-webkit-scrollbar-thumb:hover {
     background-color: rgba(224, 188, 132, 0.55);
   }
+
+  /* Narrower skin for the collapsible content zones on the Manage screen.
+     Distinct from .scroll-skin: those are full-height dashboard columns where
+     an 8px thumb on a recessed track reads as structure. These are short panes
+     nested inside a card, where the same treatment would draw a heavy vertical
+     rule down the middle of the layout — so: 4px on a transparent track. */
+  .scroll-panel {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    /* Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(224, 188, 132, 0.4) transparent;
+  }
+
+  .scroll-panel::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .scroll-panel::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scroll-panel::-webkit-scrollbar-thumb {
+    background-color: rgba(224, 188, 132, 0.4);
+    border-radius: var(--radius-input);
+  }
+
+  .scroll-panel::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(224, 188, 132, 0.7);
+  }
 }
 
 /* Kiosk: disable text selection + long-press callouts on touch targets */
