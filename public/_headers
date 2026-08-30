@@ -1,0 +1,17 @@
+# Copied verbatim into dist/ by Vite, then parsed by Workers Static Assets.
+# The file itself is never served.
+#
+# Cloudflare's default for every asset is
+#   Cache-Control: public, max-age=0, must-revalidate
+# which is what we want for index.html, sw.js and registerSW.js — the PWA
+# update path depends on the browser revalidating those every load.
+
+# Vite fingerprints these filenames with a content hash, so a changed file is
+# a changed URL. Safe to cache for a year.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Private family kiosk — nothing here should be indexed. The public marketing
+# site is a separate Worker on its own domain.
+/*
+  X-Robots-Tag: noindex

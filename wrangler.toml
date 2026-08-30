@@ -1,0 +1,33 @@
+# Cloudflare Workers Static Assets — the kiosk SPA.
+#
+# This is an assets-only Worker: there is no `main` script, so Cloudflare
+# serves the built `dist/` directly and every request is billed as a static
+# asset, not a Worker invocation.
+#
+# The MARKETING site is a separate Worker (`familychorebank-site`, at
+# familychorebank.com). Do not point this config at that name — deploying
+# would overwrite it.
+name = "familychorebank-app"
+compatibility_date = "2026-08-30"
+
+# Serve on familychorebank-app.<subdomain>.workers.dev so the migration can be
+# verified end to end before any DNS moves.
+workers_dev = true
+
+# DNS CUTOVER — ACTIVE as of 2026-08-30, after the workers.dev URL was
+# verified across all seven kiosk flows on the wall tablet.
+# Wrangler owns the app.familychorebank.com DNS record from here.
+# To roll back to Netlify, re-comment this block, redeploy, and repoint the
+# record at magenta-peony-c67c54.netlify.app.
+[[routes]]
+pattern = "app.familychorebank.com"
+custom_domain = true
+
+[assets]
+directory = "./dist"
+
+# Replaces the Netlify `/* -> /index.html 200` rewrite. React Router owns
+# every path, so any request that doesn't match a real file in dist/ must be
+# served index.html with a 200 (not a 404), or a hard refresh on /parent or
+# /child would break the kiosk.
+not_found_handling = "single-page-application"

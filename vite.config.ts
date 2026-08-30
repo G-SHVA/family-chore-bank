@@ -4,7 +4,26 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // SECURITY — do not remove. `vite build` must never inline the kiosk
+  // auto-login credentials.
+  //
+  // Under Netlify this was safe by accident: CI had no .env.local, so the
+  // vars were simply absent. `wrangler deploy` builds on the developer's
+  // machine, where .env.local IS present — without this, a deploy would
+  // publish the kiosk password in dist/assets/*.js for anyone to read.
+  //
+  // Auto-login is a local-dev convenience only (`npm run dev`, which is
+  // `command === 'serve'` and unaffected). In production every device,
+  // including the wall tablet, signs in once via the Login screen and
+  // rides the persisted refresh token from there.
+  define:
+    command === 'build'
+      ? {
+          'import.meta.env.VITE_KIOSK_LOGIN_EMAIL': '""',
+          'import.meta.env.VITE_KIOSK_LOGIN_PASSWORD': '""',
+        }
+      : {},
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -48,4 +67,4 @@ export default defineConfig({
     port: 5173,
     host: true,
   },
-})
+}))

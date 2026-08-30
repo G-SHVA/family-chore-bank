@@ -97,6 +97,89 @@ export type Database = {
           },
         ]
       }
+      chore_assignments_archive: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          assigned_by: string | null
+          assigned_to: string
+          chore_id: string
+          completed_at: string | null
+          created_at: string | null
+          due_date: string | null
+          id: string
+          is_active: boolean
+          is_template: boolean
+          notes: string | null
+          recurrence_dow: number | null
+          status: string | null
+          template_id: string | null
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          assigned_by?: string | null
+          assigned_to: string
+          chore_id: string
+          completed_at?: string | null
+          created_at?: string | null
+          due_date?: string | null
+          id: string
+          is_active?: boolean
+          is_template?: boolean
+          notes?: string | null
+          recurrence_dow?: number | null
+          status?: string | null
+          template_id?: string | null
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          assigned_by?: string | null
+          assigned_to?: string
+          chore_id?: string
+          completed_at?: string | null
+          created_at?: string | null
+          due_date?: string | null
+          id?: string
+          is_active?: boolean
+          is_template?: boolean
+          notes?: string | null
+          recurrence_dow?: number | null
+          status?: string | null
+          template_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chore_assignments_archive_approved_by_fkey"
+            columns: ["approved_by"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "chore_assignments_archive_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "chore_assignments_archive_assigned_to_fkey"
+            columns: ["assigned_to"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "chore_assignments_archive_chore_id_fkey"
+            columns: ["chore_id"]
+            isOneToOne: false
+            referencedRelation: "chores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chores: {
         Row: {
           category: string | null

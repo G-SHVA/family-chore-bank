@@ -140,6 +140,25 @@ const ASSIGNMENT_COLUMNS =
 const RESOLVED_STATUSES = ['approved', 'expired', 'rejected']
 
 /**
+ * Tables an assignment read must cover for a given range.
+ *
+ * chore_assignments_archive holds expired/rejected instances older than 90 days,
+ * moved there by archive_old_assignments(). Only All Time can reach back past
+ * that boundary, so every other range reads the live table alone — querying the
+ * archive for This Week would be a guaranteed-empty round trip.
+ *
+ * The filters below need no special-casing per table: for All Time there is no
+ * lower bound to apply, so the same builder is correct against both.
+ */
+type AssignmentSource = 'chore_assignments' | 'chore_assignments_archive'
+
+function sourcesFor(range: DateRange): AssignmentSource[] {
+  return range.key === 'all'
+    ? ['chore_assignments', 'chore_assignments_archive']
+    : ['chore_assignments']
+}
+
+/**
  * Every resolved instance whose DUE DATE falls in the range — the completion
  * universe. Anchored on due_date rather than approved_at because this answers
  * "of the chores that came due this period, how many got done".
@@ -161,22 +180,27 @@ async function fetchResolvedByDueDate(
   range: DateRange
 ): Promise<AssignmentRow[]> {
   if (childIds.length === 0) return []
-  return fetchAllPaged<AssignmentRow>((from, to) => {
-    let q = supabase
-      .from('chore_assignments')
-      .select(ASSIGNMENT_COLUMNS)
-      .in('assigned_to', childIds)
-      .eq('is_template', false)
-      .in('status', RESOLVED_STATUSES)
-      .not('template_id', 'is', null)
-      .not('due_date', 'is', null)
-      .lte('due_date', range.end.toISOString())
-    if (range.start) q = q.gte('due_date', range.start.toISOString())
-    return q.order('due_date', { ascending: false }).range(from, to) as unknown as PromiseLike<{
-      data: AssignmentRow[] | null
-      error: unknown
-    }>
-  })
+  const out: AssignmentRow[] = []
+  for (const table of sourcesFor(range)) {
+    const rows = await fetchAllPaged<AssignmentRow>((from, to) => {
+      let q = supabase
+        .from(table)
+        .select(ASSIGNMENT_COLUMNS)
+        .in('assigned_to', childIds)
+        .eq('is_template', false)
+        .in('status', RESOLVED_STATUSES)
+        .not('template_id', 'is', null)
+        .not('due_date', 'is', null)
+        .lte('due_date', range.end.toISOString())
+      if (range.start) q = q.gte('due_date', range.start.toISOString())
+      return q.order('due_date', { ascending: false }).range(from, to) as unknown as PromiseLike<{
+        data: AssignmentRow[] | null
+        error: unknown
+      }>
+    })
+    out.push(...rows)
+  }
+  return out
 }
 
 /**
@@ -190,23 +214,36 @@ async function fetchApprovedByApprovedAt(
 ): Promise<AssignmentRow[]> {
   if (childIds.length === 0) return []
   const lower = range.priorStart ?? range.start
-  return fetchAllPaged<AssignmentRow>((from, to) => {
-    let q = supabase
-      .from('chore_assignments')
-      .select(ASSIGNMENT_COLUMNS)
-      .in('assigned_to', childIds)
-      .eq('is_template', false)
-      .eq('status', 'approved')
-      .not('approved_at', 'is', null)
-      .lte('approved_at', range.end.toISOString())
-    if (lower) q = q.gte('approved_at', lower.toISOString())
-    return q.order('approved_at', { ascending: false }).range(from, to) as unknown as PromiseLike<{
-      data: AssignmentRow[] | null
-      error: unknown
-    }>
-  })
+  const out: AssignmentRow[] = []
+  // The archive never holds approved rows — archive_old_assignments() moves
+  // only 'expired' and 'rejected'. It is still read for All Time so this stays
+  // correct if that policy is ever widened; the status filter makes it a cheap
+  // no-op today rather than a source of wrong money.
+  for (const table of sourcesFor(range)) {
+    const rows = await fetchAllPaged<AssignmentRow>((from, to) => {
+      let q = supabase
+        .from(table)
+        .select(ASSIGNMENT_COLUMNS)
+        .in('assigned_to', childIds)
+        .eq('is_template', false)
+        .eq('status', 'approved')
+        .not('approved_at', 'is', null)
+        .lte('approved_at', range.end.toISOString())
+      if (lower) q = q.gte('approved_at', lower.toISOString())
+      return q.order('approved_at', { ascending: false }).range(from, to) as unknown as PromiseLike<{
+        data: AssignmentRow[] | null
+        error: unknown
+      }>
+    })
+    out.push(...rows)
+  }
+  return out
 }
 
+/**
+ * Expenses are NOT archived — archive_old_assignments() only ever touches
+ * chore_assignments — so this reads one table for every range, All Time included.
+ */
 async function fetchExpenses(childIds: string[], range: DateRange): Promise<ExpenseRow[]> {
   if (childIds.length === 0) return []
   const lower = range.priorStart ?? range.start

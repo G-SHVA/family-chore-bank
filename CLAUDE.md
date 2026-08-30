@@ -24,10 +24,84 @@ picker. Every member — children included — is gated by a 4-digit PIN.
 Boot flow: session exists -> KioskSelect; no session + VITE_KIOSK_LOGIN_*
 present -> auto-login; no session + no creds -> Login screen (src/pages/Login.tsx).
 DEPLOY NOTE: VITE_* are baked into the build. Do NOT set VITE_KIOSK_LOGIN_* in
-Netlify (that would bake the password into the public bundle AND auto-login
-every device). Leave them local-only (.env.local). In production every device —
-including the wall tablet — signs in once via the Login screen; the persisted
-refresh token keeps it logged in after.
+the Cloudflare build environment (that would bake the password into the public
+bundle AND auto-login every device). Leave them local-only (.env.local). In
+production every device — including the wall tablet — signs in once via the
+Login screen; the persisted refresh token keeps it logged in after.
+
+## Hosting — Cloudflare Workers Static Assets (migrated off Netlify 2026-08-30)
+
+Deployed as an ASSETS-ONLY Worker. `wrangler.toml` has no `main`, so there is
+no Worker script: Cloudflare serves `dist/` directly and requests bill as
+static assets, not Worker invocations. Chose Workers over Pages because
+Cloudflare's own best-practices doc now says to — Pages still works but new
+features and optimizations go to Workers only.
+
+TWO SEPARATE WORKERS IN THIS ACCOUNT. Do not confuse them:
+- `familychorebank-site` — the public MARKETING site, familychorebank.com.
+  NOT this repo. Never point wrangler.toml at that name; a deploy would
+  overwrite it.
+- `familychorebank-app` — THIS repo, the kiosk SPA, app.familychorebank.com.
+
+`not_found_handling = "single-page-application"` replaces the old Netlify
+`/* -> /index.html 200` rewrite. React Router owns every path, so an unmatched
+request must return index.html with a 200, not a 404 — otherwise a hard
+refresh on a deep route breaks the kiosk. This is the one setting that must
+never be dropped.
+
+`public/_headers` (Vite copies it into dist/, Workers parses it and never
+serves it): `/assets/*` gets a one-year immutable cache because Vite
+fingerprints those filenames; everything else keeps Cloudflare's default
+`max-age=0, must-revalidate`, which the PWA update path depends on — sw.js and
+index.html MUST stay revalidated or tablets pin to a stale build. Also sets
+X-Robots-Tag: noindex, since this is a private family app.
+
+### CREDENTIAL HAZARD THIS MIGRATION INTRODUCED — read before touching vite.config.ts
+
+Netlify built in CI, where .env.local does not exist, so VITE_KIOSK_LOGIN_*
+was absent from production bundles by accident of environment. `wrangler
+deploy` builds on the DEVELOPER'S MACHINE, where .env.local IS present.
+Verified on 2026-08-30: a plain `npm run build` here inlined both the kiosk
+email AND the kiosk password into dist/assets/*.js. Deploying that would have
+published the shared kiosk password to the public internet.
+
+vite.config.ts now force-defines both vars to "" whenever `command === 'build'`.
+Dev (`npm run dev`, command === 'serve') is unaffected, so local auto-login
+still works. useAuth guards with `if (email && password)`, and "" is falsy, so
+a production build simply falls through to the Login screen — which is the
+documented production boot flow anyway.
+
+DO NOT remove that `define` block, and do not "fix" it by moving the vars to
+Cloudflare's build env. There is no build-env setting that makes shipping
+these safe: Vite inlines VITE_* into the public bundle by definition.
+After any change to the build, re-check with:
+  grep -rF "$(grep '^VITE_KIOSK_LOGIN_PASSWORD=' .env.local | cut -d= -f2-)" dist
+
+Deploy with `npm run deploy` (builds, then `wrangler deploy`).
+
+### Migration status — COMPLETE (2026-08-30)
+
+Netlify is fully retired for this app. app.familychorebank.com now serves the
+`familychorebank-app` Worker: DNS resolves to Cloudflare, `Server: cloudflare`
+with a CF-RAY, no Netlify headers.
+
+The cutover required deleting a leftover DNS-only CNAME
+(`app` -> magenta-peony-c67c54.netlify.app) by hand first. Cloudflare refuses
+to create a Custom Domain on a hostname that already has a CNAME, so
+`wrangler deploy` cannot do this for you and will fail until the record is
+gone. Note this if the domain is ever moved again.
+
+Verified on the live domain: deep routes return the SPA shell with a 200,
+assets serve with correct MIME types, cache headers are as configured, and
+the production bundle contains neither kiosk credential.
+
+`workers_dev = true` is deliberately still on —
+familychorebank-app.gary-d84.workers.dev remains a working origin for testing
+a build without touching the domain the family uses.
+
+ROLLBACK (only if needed): re-comment the [[routes]] block, redeploy, then
+recreate the DNS record `app CNAME magenta-peony-c67c54.netlify.app`, DNS-only
+(grey cloud). The Netlify deployment itself was never deleted.
 
 ## Design tokens
 Background: #181818 | Cards: #242424 | Gold: #E6B800
@@ -181,6 +255,81 @@ For V2 SaaS launch, migrate to on-demand generation:
 - Result: zero DB writes for chores that are never touched
 
 This change reduces DB row generation by ~90% at scale.
+
+### STORAGE OPTIMIZATION — IMPLEMENTED (2026-08-30)
+
+Phase 1 is live: indexes reviewed, archive table created, analytics union
+queries implemented for All Time.
+
+**Indexes on chore_assignments.** Only ONE was actually added —
+`idx_ca_due_date (due_date DESC)`. The other three planned indexes already
+existed under different names, and creating them would have added pure write
+cost to a table growing ~51 rows/day:
+
+- `idx_ca_due_date (due_date DESC)` — ADDED this session
+- `idx_chore_assignments_assigned_to (assigned_to)` — already existed
+- `idx_chore_assignments_status (status)` — already existed
+- `chore_assignments_template_active_idx (is_template, is_active)
+  WHERE is_template = true` — already existed, and supersedes a plain
+  `(is_template) WHERE is_template = true`
+- also present: `idx_chore_assignments_assigned_instances
+  (assigned_to, due_date) WHERE is_template = false`,
+  `idx_chore_assignments_chore_id`, `idx_chore_assignments_template_id`
+
+RULE: check `pg_indexes` before adding an index here. Duplicate indexes are
+invisible in queries and expensive on every write.
+
+**chore_assignments_archive table.**
+
+- Column list mirrors chore_assignments EXACTLY — all 15 columns, same order,
+  `is_active` and `recurrence_dow` INCLUDED. They are not optional: the archive
+  function moves rows between the tables, and a column-count mismatch fails at
+  runtime. If a column is ever added to chore_assignments, add it here and to
+  the explicit column lists inside archive_old_assignments().
+- Carries the same four FKs as the live table. These are load-bearing, not
+  decoration: PostgREST derives embedded joins from foreign keys, so without
+  `chore_id -> chores(id)` an All Time analytics read of
+  `chore:chores(title, value, category)` fails with PGRST200 "Could not find a
+  relationship". Verified against the live REST endpoint.
+- RLS enabled, family-scoped through `chores.family_id`, mirroring the live
+  table's policy. Do NOT write the policy as a subquery over
+  chore_assignments_archive itself — Postgres re-applies the policy to that
+  inner reference and aborts with "infinite recursion detected in policy for
+  relation". It would also match nothing regardless, because this kiosk keeps a
+  user_id on the operator member row only while assignments belong to children.
+
+**archive_old_assignments().**
+
+- Moves expired/rejected instance rows older than 90 days into the archive.
+- Single `WITH moved AS (DELETE ... RETURNING *) INSERT ...` statement, so the
+  set archived and the set deleted are identical by construction. Two separate
+  statements could diverge, and the divergence would be silent data loss next
+  to the money path.
+- SECURITY DEFINER with `SET search_path = public, pg_temp`, and EXECUTE
+  granted to service_role only — it deletes rows, so the kiosk's shared
+  authenticated session must not be able to call it over REST.
+- NEVER archives: approved rows (the financial history behind every balance),
+  template rows, or pending/in_progress rows.
+- Run manually about monthly for now. As of 2026-08-30 it would move 0 rows —
+  all data is younger than 90 days. Verified end to end by backdating one
+  expired row, archiving it, and restoring it.
+
+**Analytics union.** Implemented in `src/features/analytics/analyticsService.ts`
+(NOT choreService.ts — analytics moved to its own service). `sourcesFor(range)`
+returns both tables when `range.key === 'all'` and the live table alone
+otherwise; the filters need no special-casing, because All Time has no lower
+bound to apply. Expenses are never archived, so `fetchExpenses` reads one table
+for every range.
+
+**Storage projections.** Measured ~420 bytes/row all-in (144 kB table +
+176 kB indexes across 855 rows), of which ~180 bytes is the row itself. At
+18,600 rows/family/year and 100 families that is ~1.86M rows/year, ~781 MB/year
+including indexes. Supabase Pro ($25/mo) includes 8 GB — several years of
+headroom at that scale.
+
+Phase 2 (public launch): upgrade to Supabase Pro.
+Phase 3 (50+ families): schedule archive_old_assignments() via Supabase cron,
+monthly.
 
 ### MONTHLY MAINTENANCE — deleteExpiredAssignments()
 src/features/chores/choreService.ts exports deleteExpiredAssignments(days=30).

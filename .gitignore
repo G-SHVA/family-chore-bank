@@ -42,3 +42,6 @@ dev.err
 
 # typescript build info
 *.tsbuildinfo
+
+# cloudflare wrangler local state
+.wrangler/
