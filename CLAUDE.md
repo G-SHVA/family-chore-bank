@@ -276,6 +276,24 @@ bug. Do not chase without a reason.
 - Project PAUSES after 1 week of inactivity. Keep the family using it
   daily, or add a scheduled health-check ping. Revisit before beta.
 
+## Pre-launch checklist
+
+- families.timezone column reads 'UTC' but client and the daily dedup index
+  both use America/Chicago. Reconcile before multi-family launch — either
+  populate timezone from family settings or make the index timezone-aware
+  from the DB column.
+  Context: the client computes due_date from the BROWSER's local zone, and
+  idx_ca_daily_dedup buckets by a hardcoded 'America/Chicago' literal. Both
+  are correct for this one family and nothing reads families.timezone today,
+  so the mismatch is latent. It stops being latent the moment a second family
+  sits in another zone: their day boundary would be bucketed against Chicago's,
+  so a chore generated late evening local could land in the neighbouring
+  bucket and either duplicate or be wrongly suppressed.
+  NOTE if making the index read the column: an index expression must be
+  IMMUTABLE, and a subquery against families is not. That route needs the
+  timezone denormalised onto chore_assignments (or a generated local-day
+  column) rather than a lookup inside the index.
+
 ## V2 Architecture Notes
 
 ### CHORE GENERATION — SCALE CONSIDERATION
