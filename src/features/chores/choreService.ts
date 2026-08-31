@@ -320,41 +320,95 @@ function buildInstance(template: ChoreAssignment, due: Date): TablesInsert<'chor
 const ACTIVE_STATUSES = ['pending', 'in_progress', 'completed', 'rejected']
 
 /**
- * All instance rows (never templates) for a member, NEWEST FIRST, with chore.
+ * Live, actionable instances for a member — NEWEST FIRST, with chore.
  *
- * The ordering is load-bearing, not cosmetic. This is a capped fetch, so
- * whichever end of the range it sorts from is the end that survives the cap.
- * It previously sorted ascending (oldest first), which meant that once a
- * child accumulated more than INSTANCE_FETCH_LIMIT rows of history, the cap
- * silently ate the *newest* rows — every pending chore for today — and the
- * child saw an empty chore list while the roster generated normally.
- * Sorting descending keeps current chores in the window at any history size.
+ * THIRD FIX IN THE SAME TRUNCATION CLASS (2026-08-31). This was previously
+ * getMemberInstances(), which fetched EVERY status for a member under one
+ * limit(500). That made a capped read compete between two unrelated things:
+ * a child's live chores, and their ever-growing history of approved/expired
+ * rows. History always wins that race eventually, and when it does the child's
+ * actual chores fall out of the window and the list goes blank.
  *
- * Callers that need lifetime totals must NOT derive them from this list;
- * use getLifetimeCounts(), which aggregates server-side and is not capped.
+ * The fix is the explicit status filter, not the ordering. `approved` and
+ * `expired` are the two statuses that grow without bound, and both are now
+ * excluded here, so this fetch is bounded by CURRENT work — at most one
+ * instance per active roster entry per period. The remaining statuses are
+ * self-limiting: pending/in_progress are current-period only, and rejected is
+ * pruned at 30 days by deleteExpiredAssignments().
+ *
+ * NOTE: dropping the limit entirely would NOT have fixed this. PostgREST
+ * applies its own server-side max-rows to any unbounded read, so removing
+ * .limit() just replaces a visible cap with an invisible one — which is the
+ * precise mechanism behind the duplicate-generation bug fixed the same day.
+ * Always bound a read yourself, by status or date, and order so the rows you
+ * need are the ones that survive.
+ *
+ * Callers needing lifetime totals must NOT derive them here: use
+ * getLifetimeCounts(), which aggregates server-side and is not capped.
  */
-const INSTANCE_FETCH_LIMIT = 500
+const ACTIVE_FETCH_LIMIT = 500
 
-export async function getMemberInstances(memberId: string): Promise<AssignmentWithChore[]> {
+export async function getActiveInstances(memberId: string): Promise<AssignmentWithChore[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
     .select('*, chore:chores(*)')
     .eq('assigned_to', memberId)
     .eq('is_template', false)
+    .in('status', ACTIVE_STATUSES)
     .order('due_date', { ascending: false })
-    .limit(INSTANCE_FETCH_LIMIT)
+    .limit(ACTIVE_FETCH_LIMIT)
   if (error) throw error
   return (data ?? []) as AssignmentWithChore[]
 }
 
 /**
- * Every approved instance for a member, with its chore value. Approved rows
- * are the financial history: they are never expired or cleaned up, and they
- * grow far slower than expired/rejected churn, so this stays small enough to
- * fetch whole. Earnings and streaks are derived from this, not from the
- * capped recent-instances window.
+ * How far back the child dashboard reads approved history. Bounds both the
+ * streak and the weekly money figures. A streak longer than this is reported
+ * as this many days — a deliberate, documented ceiling, rather than the silent
+ * and unpredictable one a row cap gives you.
  */
-async function getApprovedInstances(memberId: string): Promise<AssignmentWithChore[]> {
+const RECENT_WINDOW_DAYS = 90
+const RECENT_FETCH_LIMIT = 1000
+
+/** Approved rows since `since`, newest first. Date-bounded, never lifetime. */
+async function getApprovedSince(memberId: string, since: Date): Promise<AssignmentWithChore[]> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('*, chore:chores(*)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', false)
+    .eq('status', 'approved')
+    .gte('approved_at', since.toISOString())
+    .order('approved_at', { ascending: false })
+    .limit(RECENT_FETCH_LIMIT)
+  if (error) throw error
+  return (data ?? []) as AssignmentWithChore[]
+}
+
+/**
+ * Every instance due inside a window, ANY status — expired included, because
+ * the completion rate needs the chores that were missed as well as the ones
+ * that were done. Bounded by the window, not by a row count.
+ */
+async function getInstancesDueBetween(
+  memberId: string,
+  start: Date,
+  end: Date
+): Promise<AssignmentWithChore[]> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('*, chore:chores(*)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', false)
+    .gte('due_date', start.toISOString())
+    .lte('due_date', end.toISOString())
+    .order('due_date', { ascending: false })
+    .limit(RECENT_FETCH_LIMIT)
+  if (error) throw error
+  return (data ?? []) as AssignmentWithChore[]
+}
+
+export async function getApprovedInstances(memberId: string): Promise<AssignmentWithChore[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
     .select('*, chore:chores(*)')
@@ -409,8 +463,6 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
     .single()
   if (memErr) throw memErr
 
-  const instances = await getMemberInstances(memberId)
-
   const weekStart = startOfWeek(now)
   const weekEnd = endOfWeek(now)
   const inThisWeek = (iso: string | null) => {
@@ -419,35 +471,46 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
     return d >= weekStart && d <= weekEnd
   }
 
-  const activeChores = instances.filter((i) => i.status && ACTIVE_STATUSES.includes(i.status))
+  // Three purpose-built reads instead of one capped all-status fetch. Each is
+  // bounded by what it actually needs — status, or a date window — so a child's
+  // growing history can never crowd their live chores out of the result. See
+  // getActiveInstances() for the full account of the bug this replaces.
+  const streakSince = startOfDay(now)
+  streakSince.setDate(streakSince.getDate() - RECENT_WINDOW_DAYS)
 
-  const pendingApproval = instances.filter((i) => i.status === 'completed').length
+  const [activeChores, approvedRecent, dueThisWeek] = await Promise.all([
+    getActiveInstances(memberId),
+    getApprovedSince(memberId, streakSince),
+    getInstancesDueBetween(memberId, weekStart, weekEnd),
+  ])
 
-  const dueToday = instances.filter(
+  const pendingApproval = activeChores.filter((i) => i.status === 'completed').length
+
+  const dueToday = activeChores.filter(
     (i) =>
       i.due_date &&
       isSameDay(new Date(i.due_date), now) &&
       (i.status === 'pending' || i.status === 'in_progress')
   ).length
 
-  const approvedThisWeek = instances.filter(
-    (i) => i.status === 'approved' && inThisWeek(i.approved_at)
-  )
+  const approvedThisWeek = approvedRecent.filter((i) => inThisWeek(i.approved_at))
   const weeklyEarnings = approvedThisWeek.reduce((sum, i) => sum + (i.chore?.value ?? 0), 0)
 
-  const completedThisWeek = instances.filter(
+  // 'completed' rows live in the active set, 'approved' ones in the recent set.
+  const completedThisWeek = [...activeChores, ...approvedRecent].filter(
     (i) => (i.status === 'completed' || i.status === 'approved') && inThisWeek(i.completed_at)
   ).length
 
-  // Completion rate over this week's instances (approved+completed / all due this week).
-  const dueThisWeek = instances.filter((i) => inThisWeek(i.due_date))
+  // Completion rate over this week's instances (approved+completed / all due
+  // this week). Reads the week-windowed set, which includes 'expired' — the
+  // missed chores are exactly what makes this a rate rather than a tally.
   const doneThisWeek = dueThisWeek.filter(
     (i) => i.status === 'approved' || i.status === 'completed'
   ).length
   const completionRate =
     dueThisWeek.length > 0 ? Math.round((doneThisWeek / dueThisWeek.length) * 100) : 0
 
-  const currentStreak = computeStreak(instances, now)
+  const currentStreak = computeStreak(approvedRecent, now)
 
   return {
     balance: member.balance ?? 0,

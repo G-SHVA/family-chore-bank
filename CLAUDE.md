@@ -142,10 +142,33 @@ explicitly and never rely on a row limit to implicitly exclude history. If a
 query is capped, sort so the rows you actually need are the ones that survive
 the cap — and never derive lifetime totals from a capped fetch.
 
-Note the active path is capped at 500, not uncapped. The cap is a payload
-guard, not a filter: correctness comes from the DESC ordering, not from the
-limit. A child who ever exceeds 500 rows of *live* chores would hit the same
-class of bug, so keep the cleanup and the V2 on-demand migration in view.
+UPDATE 2026-08-31: that 500 cap DID bite, exactly as predicted above.
+getMemberInstances fetched every status under one limit(500), so a child's
+live chores competed with their own growing history for the same 500 slots.
+Measured on live data before the fix: POCO had 654 instance rows and was
+silently losing 21 ACTIVE chores and 15 approved rows; Cuddles had 746 and was
+losing 1 active and 5 approved. It is now split into getActiveInstances()
+(explicit status filter — 'approved' and 'expired', the two unbounded statuses,
+are excluded, so the read is bounded by current work) plus date-bounded
+getApprovedSince() and getInstancesDueBetween() for the dashboard's history
+figures.
+
+Dropping the limit instead would NOT have fixed it. PostgREST applies its own
+server-side max-rows to any unbounded read, so removing .limit() swaps a
+visible cap for an invisible one — the precise mechanism behind the duplicate
+generation bug. Bound every read yourself, by status or by date.
+
+TRUNCATION CLASS -- THREE INSTANCES FIXED:
+1. getMemberInstances (dashboard/chores) -- fixed with query split, DESC
+   ordering
+2. getFamilyChildSummaries (parent dashboard) -- fixed with date-bounded reads
+3. getMemberInstances 500-row cap -- fixed [2026-08-31]
+Any new query against chore_assignments or chore_assignments_archive must:
+- Never rely on a row limit to filter data
+- Always specify status filters explicitly
+- Always use DESC ordering on due_date
+- Use server-side aggregates (head:true) for counts, never client-side
+  array.length
 
 ## CRITICAL BUG FIXED Aug 31 2026 — duplicate chore generation
 

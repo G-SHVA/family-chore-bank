@@ -4,7 +4,8 @@ import { Loader2, ListChecks } from 'lucide-react'
 import { AnimatePresence } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
-  getMemberInstances,
+  getActiveInstances,
+  getApprovedInstances,
   markChoreComplete,
   type AssignmentWithChore,
 } from '@/features/chores/choreService'
@@ -44,8 +45,16 @@ export default function ChildChores() {
   const load = useCallback(async () => {
     if (!memberId) return
     // NO generation here — see the note in the child Dashboard loader.
-    const data = await getMemberInstances(memberId)
-    setInstances(data)
+    //
+    // Two reads, not one. The "Completed" tab wants approved history while
+    // every other tab wants live chores, and serving both from a single capped
+    // fetch is what let history push the live rows out of the window (see
+    // getActiveInstances). Each read is now bounded by its own status filter.
+    const [active, approved] = await Promise.all([
+      getActiveInstances(memberId),
+      getApprovedInstances(memberId),
+    ])
+    setInstances([...active, ...approved])
     setLoading(false)
   }, [memberId])
 
