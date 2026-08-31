@@ -147,6 +147,66 @@ guard, not a filter: correctness comes from the DESC ordering, not from the
 limit. A child who ever exceeds 500 rows of *live* chores would hit the same
 class of bug, so keep the cleanup and the V2 on-demand migration in view.
 
+## CRITICAL BUG FIXED Aug 31 2026 — duplicate chore generation
+
+generateDailyAssignments() re-inserted the ENTIRE active roster on every call.
+The table held 5,330 instance rows where 1,400 were legitimate; one chore had
+180 copies for a single child on a single day.
+
+ROOT CAUSE — the same failure class as the getMemberInstances truncation above.
+The existence check ran with no .order() and no .limit():
+
+    .select('id, template_id, due_date')
+    .eq('is_template', false)
+    .in('template_id', templateIds)
+
+PostgREST caps an unbounded read at 1000 rows, and with no ORDER BY it returns
+the OLDEST rows in physical order. Growth was a steady 68 rows/day from Aug 12
+to Aug 28; the running total crossed 1,000 on Aug 27, and Aug 29 produced 1,995.
+Once past the cap the check saw only ancient history — all 85 templates were
+still *visible*, but only 7 had a CURRENT-PERIOD row in the window — so 78 of 85
+looked unfulfilled and were re-created on every single pass. Self-amplifying:
+each pass pushed the live rows further out of reach.
+
+Timezone was NOT involved. All 236 duplicate groups had byte-identical due_date
+values; nothing round-tripped wrong.
+
+THREE-LAYER FIX. Do not remove any layer thinking another covers it:
+1. `idx_ca_daily_dedup` — partial unique index on (template_id, assigned_to,
+   date_trunc('day', due_date AT TIME ZONE 'America/Chicago')) WHERE
+   is_template = false AND template_id IS NOT NULL AND status IN
+   ('pending','in_progress'). This is the ONLY layer that survives concurrency.
+   Scoped to the two statuses the generator inserts, so historical
+   approved/completed/rejected rows are never constrained — they are the
+   financial record and must stay writable.
+   NOTE: that `AT TIME ZONE '<literal>'` form IS immutable and legal in an index;
+   the one-arg date_trunc on a timestamptz is not (it reads session TimeZone).
+2. The insert is `.upsert(rows, { ignoreDuplicates: true })`. Passing NO
+   onConflict is deliberate — PostgREST then emits an UNTARGETED
+   `ON CONFLICT DO NOTHING`, which honours a partial expression index. A named
+   conflict target cannot reference one.
+3. The existence check is now date-bounded, ordered DESC and explicitly limited.
+
+Generation is PARENT-DASHBOARD ONLY. Children must never trigger it. The child
+Dashboard loader also runs after every completion, so a child working down their
+list fired one full roster pass per chore — five passes in 41 seconds, observed.
+The old module-level `generationLock` only coalesced calls within one tab, so two
+tablets still raced; `GENERATION_MIN_INTERVAL_MS` now collapses bursts, but the
+unique index is what actually makes concurrent passes safe.
+
+RULE: never issue an unbounded PostgREST read against a growing table. Bound it
+by date, order so the rows you need survive the cap, and set the limit yourself.
+
+### Known minor balance variance — $0.30, deliberately not corrected
+The duplicate bug let a few chores be approved more than once before it was
+caught: POCO over-credited $0.10, Cuddles $0.20. Decision (2026-08-31): do NOT
+touch it. Balances are trigger-managed; a DELETE of an approved row does not
+reverse its credit (the trigger is AFTER UPDATE), so reconciling would mean
+writing family_members.balance directly — more risk than $0.30 warrants. The
+duplicate approved rows were left in place so history still matches the balance.
+The index prevents any recurrence. This is likely also the source of the
+Achievements discrepancy noted below.
+
 ### Known minor discrepancy — Achievements total earned (investigate later)
 Achievements displayed $6.90 total earned where SQL computes $7.00 over the
 same rows — a 10c gap, likely one approved chore_assignment whose joined

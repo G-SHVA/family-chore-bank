@@ -4,7 +4,6 @@ import { Loader2, Flame, AlertTriangle } from 'lucide-react'
 import { AnimatePresence } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
-  generateDailyAssignments,
   getChildDashboard,
   markChoreComplete,
   type ChildDashboardData,
@@ -29,8 +28,10 @@ export default function ChildDashboard() {
     if (!memberId) return
     try {
       setError(null)
-      // Self-healing: create any missing instances for the current period.
-      await generateDailyAssignments()
+      // NO generation here. Children must never trigger a generation pass:
+      // this loader also runs after every completion, so a child working
+      // through their list fired a full roster pass per chore (five in 41
+      // seconds, observed). Generation belongs to the parent dashboard.
       const dash = await getChildDashboard(memberId)
       setData(dash)
     } catch (e) {
@@ -150,7 +151,7 @@ export default function ChildDashboard() {
               : 'No chores here. Nice work! 🎉'}
           </Card>
         ) : (
-          <div className="scroll-skin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-2">
+          <div className="scroll-panel flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-2">
             <AnimatePresence initial={false}>
               {chores.map((c) => (
                 <ChoreCard

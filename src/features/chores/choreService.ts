@@ -121,21 +121,71 @@ function isSameDay(a: Date, b: Date) {
  * Reads all roster templates (is_template = true), and for each one creates a
  * fresh instance row (is_template = false, linked via template_id) for the
  * current period if one doesn't already exist. `once` templates generate a
- * single instance and never regenerate. Idempotent — safe to call on every load.
- * Returns the number of new instances created.
+ * single instance and never regenerate. Returns the number of instances that
+ * were ACTUALLY created.
  *
- * A module-level lock coalesces concurrent calls (e.g. React StrictMode's
- * double-invoked effects, or two components mounting at once) into a single
- * run so we never double-insert instances for the same period.
+ * PARENT DASHBOARD ONLY. Children must never call this — see the note in the
+ * child Dashboard loader.
+ *
+ * Idempotency is layered, and the layers are not interchangeable:
+ *   1. `idx_ca_daily_dedup`, a partial unique index on
+ *      (template_id, assigned_to, local day) for pending/in_progress rows.
+ *      This is the ONLY layer that survives concurrency, and it is why the
+ *      insert below is an ignore-duplicates upsert.
+ *   2. The date-bounded existence check in runGeneration(), which avoids the
+ *      write when there is nothing to do.
+ *   3. The in-tab promise lock and burst window below.
+ *
+ * The lock was once believed sufficient. It is not: it coalesces calls within
+ * ONE tab, so two tablets — or one tab across a reload — still ran concurrent
+ * passes. Combined with an unbounded existence read that silently truncated at
+ * 1000 rows, that produced 5330 instance rows where 1400 belonged.
  */
 let generationLock: Promise<number> | null = null
-export function generateDailyAssignments(now: Date = new Date()): Promise<number> {
+
+/**
+ * Rapid-fire suppression. The in-tab lock only coalesces calls that overlap;
+ * five *sequential* passes still ran in 41 seconds when a child marked chores
+ * complete one after another (each completion re-ran the page loader). This
+ * collapses a burst without blocking a legitimate later pass — a parent who
+ * adds a roster entry mid-day still sees it generate within the window.
+ */
+const GENERATION_MIN_INTERVAL_MS = 30_000
+let lastGenerationAt = 0
+
+export function generateDailyAssignments(
+  now: Date = new Date(),
+  { force = false }: { force?: boolean } = {}
+): Promise<number> {
   if (generationLock) return generationLock
-  generationLock = runGeneration(now).finally(() => {
-    generationLock = null
-  })
+  if (!force && Date.now() - lastGenerationAt < GENERATION_MIN_INTERVAL_MS) {
+    return Promise.resolve(0)
+  }
+  generationLock = runGeneration(now)
+    .then((created) => {
+      lastGenerationAt = Date.now()
+      return created
+    })
+    .finally(() => {
+      generationLock = null
+    })
   return generationLock
 }
+
+/**
+ * The widest period start the existence check might need to look back to. A
+ * week can begin in the previous month, so take the earlier of the two.
+ */
+function existenceHorizon(now: Date): Date {
+  return new Date(Math.min(startOfWeek(now).getTime(), startOfMonth(now).getTime()))
+}
+
+/**
+ * Payload guard for the existence read — NOT the correctness mechanism.
+ * Correctness comes from the date bound plus idx_ca_daily_dedup. One period
+ * holds at most one instance per active template, so this is generous.
+ */
+const PERIOD_FETCH_LIMIT = 2000
 
 async function runGeneration(now: Date): Promise<number> {
   // Retire anything that lapsed before generating this period's fresh set.
@@ -150,11 +200,26 @@ async function runGeneration(now: Date): Promise<number> {
   if (!templates || templates.length === 0) return 0
 
   const templateIds = templates.map((t) => t.id)
+
+  // BOUNDED ON PURPOSE. This query previously had no .order() and no .limit().
+  // PostgREST caps an unbounded read at 1000 rows and, with no ORDER BY,
+  // returns the OLDEST rows by physical order — so once this table passed 1000
+  // instances the check saw only ancient history, concluded every template was
+  // missing its current period, and re-inserted the whole active roster on
+  // EVERY call. 1400 legitimate rows became 5330 in three days. Same failure
+  // class as the getMemberInstances truncation documented in CLAUDE.md.
+  //
+  // The date bound means this window can only ever hold one period's worth of
+  // rows, and the DESC ordering means the rows we actually need are the ones
+  // that survive the cap.
   const { data: instances, error: instErr } = await supabase
     .from('chore_assignments')
     .select('id, template_id, due_date')
     .eq('is_template', false)
     .in('template_id', templateIds)
+    .gte('due_date', existenceHorizon(now).toISOString())
+    .order('due_date', { ascending: false })
+    .limit(PERIOD_FETCH_LIMIT)
   if (instErr) throw instErr
 
   const existingByTemplate = new Map<string, { due_date: string | null }[]>()
@@ -163,6 +228,24 @@ async function runGeneration(now: Date): Promise<number> {
     const list = existingByTemplate.get(inst.template_id) ?? []
     list.push(inst)
     existingByTemplate.set(inst.template_id, list)
+  }
+
+  // `once` templates need LIFETIME existence, not this period's. The date bound
+  // above would hide an instance generated months ago and regenerate it, so
+  // these are looked up separately and unbounded by date.
+  const onceIds = templates
+    .filter((t) => ((t as AssignmentWithChore).chore?.frequency ?? 'daily') === 'once')
+    .map((t) => t.id)
+  const onceSeen = new Set<string>()
+  if (onceIds.length > 0) {
+    const { data: onceRows, error: onceErr } = await supabase
+      .from('chore_assignments')
+      .select('template_id')
+      .eq('is_template', false)
+      .in('template_id', onceIds)
+      .limit(PERIOD_FETCH_LIMIT)
+    if (onceErr) throw onceErr
+    for (const r of onceRows ?? []) if (r.template_id) onceSeen.add(r.template_id)
   }
 
   const toInsert: TablesInsert<'chore_assignments'>[] = []
@@ -174,8 +257,9 @@ async function runGeneration(now: Date): Promise<number> {
     const existing = existingByTemplate.get(t.id) ?? []
 
     if (freq === 'once') {
-      // Generate exactly one instance, ever.
-      if (existing.length > 0) continue
+      // Generate exactly one instance, ever — checked against the lifetime set,
+      // not `existing`, which only covers the current period window.
+      if (onceSeen.has(t.id)) continue
       toInsert.push(buildInstance(t, endOfDay(now)))
       continue
     }
@@ -196,9 +280,25 @@ async function runGeneration(now: Date): Promise<number> {
 
   if (toInsert.length === 0) return 0
 
-  const { error: insErr } = await supabase.from('chore_assignments').insert(toInsert)
+  // ignoreDuplicates => `Prefer: resolution=ignore-duplicates`, which PostgREST
+  // emits as an UNTARGETED `ON CONFLICT DO NOTHING`. Untargeted matters: the
+  // guard is idx_ca_daily_dedup, a PARTIAL EXPRESSION index that cannot be
+  // named as a conflict target, and the untargeted form honours it anyway.
+  //
+  // This is what makes generation genuinely idempotent rather than
+  // idempotent-if-you-squint: two tablets generating in the same instant now
+  // collide inside Postgres and produce one row, and the loser's rows are
+  // dropped silently instead of erroring. The client-side check above is now
+  // only an optimisation to avoid the write, not the thing keeping us honest.
+  //
+  // With `ignoreDuplicates`, the representation returned contains ONLY rows
+  // that were actually inserted — so this count is real, not optimistic.
+  const { data: inserted, error: insErr } = await supabase
+    .from('chore_assignments')
+    .upsert(toInsert, { ignoreDuplicates: true })
+    .select('id')
   if (insErr) throw insErr
-  return toInsert.length
+  return inserted?.length ?? 0
 }
 
 function buildInstance(template: ChoreAssignment, due: Date): TablesInsert<'chore_assignments'> {

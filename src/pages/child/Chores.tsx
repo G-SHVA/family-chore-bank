@@ -4,7 +4,6 @@ import { Loader2, ListChecks } from 'lucide-react'
 import { AnimatePresence } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
-  generateDailyAssignments,
   getMemberInstances,
   markChoreComplete,
   type AssignmentWithChore,
@@ -44,7 +43,7 @@ export default function ChildChores() {
 
   const load = useCallback(async () => {
     if (!memberId) return
-    await generateDailyAssignments()
+    // NO generation here — see the note in the child Dashboard loader.
     const data = await getMemberInstances(memberId)
     setInstances(data)
     setLoading(false)
