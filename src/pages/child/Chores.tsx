@@ -5,7 +5,7 @@ import { AnimatePresence } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getActiveInstances,
-  getApprovedInstances,
+  getRecentApprovedInstances,
   markChoreComplete,
   type AssignmentWithChore,
 } from '@/features/chores/choreService'
@@ -52,7 +52,7 @@ export default function ChildChores() {
     // getActiveInstances). Each read is now bounded by its own status filter.
     const [active, approved] = await Promise.all([
       getActiveInstances(memberId),
-      getApprovedInstances(memberId),
+      getRecentApprovedInstances(memberId),
     ])
     setInstances([...active, ...approved])
     setLoading(false)

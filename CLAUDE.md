@@ -158,11 +158,20 @@ server-side max-rows to any unbounded read, so removing .limit() swaps a
 visible cap for an invisible one — the precise mechanism behind the duplicate
 generation bug. Bound every read yourself, by status or by date.
 
-TRUNCATION CLASS -- THREE INSTANCES FIXED:
+TRUNCATION CLASS -- FOUR INSTANCES FIXED:
 1. getMemberInstances (dashboard/chores) -- fixed with query split, DESC
    ordering
 2. getFamilyChildSummaries (parent dashboard) -- fixed with date-bounded reads
 3. getMemberInstances 500-row cap -- fixed [2026-08-31]
+4. getApprovedInstances .limit(5000) feeding lifetime earnings -- fixed
+   [2026-08-31] with server-side aggregates. A limit ABOVE PostgREST's own
+   max-rows is decorative: the server clips it silently, so 5000 read as "all
+   of them" while returning a capped array that money was then summed from.
+   Replaced by member_earnings_summary() (SUM in Postgres) and
+   member_approved_day_counts() (one row per DAY, not per chore, so streak
+   history grows ~365/year instead of with chores approved -- 73 approved rows
+   collapse to 6 day rows). The remaining list read is renamed
+   getRecentApprovedInstances() and is display-only: NEVER sum money from it.
 Any new query against chore_assignments or chore_assignments_archive must:
 - Never rely on a row limit to filter data
 - Always specify status filters explicitly
@@ -299,6 +308,22 @@ bug. Do not chase without a reason.
 - Project PAUSES after 1 week of inactivity. Keep the family using it
   daily, or add a scheduled health-check ping. Revisit before beta.
 
+## Local credentials drift
+
+.env.local holds VITE_KIOSK_LOGIN_EMAIL / VITE_KIOSK_LOGIN_PASSWORD for dev
+auto-login only (vite.config.ts force-defines both to "" on build, so they
+never reach a bundle -- see the credential hazard section above).
+
+Those local values can DRIFT from the live kiosk account. If the kiosk password
+is changed in Supabase and .env.local is not updated, dev auto-login fails
+silently and drops to the Login screen, which looks like a broken boot flow
+rather than a stale password. Confirmed stale on 2026-08-31: the stored password
+returned invalid_credentials against the live project.
+
+PROCESS: whenever the kiosk account password changes, update .env.local in the
+same sitting. It is the only copy, it is gitignored by design, and nothing will
+warn you it has gone stale.
+
 ## Pre-launch checklist
 
 - families.timezone column reads 'UTC' but client and the daily dedup index
@@ -312,6 +337,8 @@ bug. Do not chase without a reason.
   sits in another zone: their day boundary would be bucketed against Chicago's,
   so a chore generated late evening local could land in the neighbouring
   bucket and either duplicate or be wrongly suppressed.
+  Also hardcoded to America/Chicago: member_approved_day_counts(), which buckets
+  approved_at into local days for the streak. Reconcile it alongside the index.
   NOTE if making the index read the column: an index expression must be
   IMMUTABLE, and a subquery against families is not. That route needs the
   timezone denormalised onto chore_assignments (or a generated local-day

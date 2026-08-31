@@ -928,6 +928,21 @@ export type Database = {
       is_family_admin: { Args: { check_family_id: string }; Returns: boolean }
       is_family_parent: { Args: { check_family_id: string }; Returns: boolean }
       is_plan_available: { Args: { p_plan_tier: string }; Returns: boolean }
+      member_approved_day_counts: {
+        Args: { p_member_id: string }
+        Returns: {
+          day: string
+          roster_count: number
+          total_count: number
+        }[]
+      }
+      member_earnings_summary: {
+        Args: { p_member_id: string; p_since?: string }
+        Returns: {
+          approved_count: number
+          total_earned: number
+        }[]
+      }
       user_belongs_to_family: {
         Args: { check_family_id: string }
         Returns: boolean

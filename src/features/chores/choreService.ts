@@ -408,7 +408,25 @@ async function getInstancesDueBetween(
   return (data ?? []) as AssignmentWithChore[]
 }
 
-export async function getApprovedInstances(memberId: string): Promise<AssignmentWithChore[]> {
+/**
+ * Recent approved rows for DISPLAY ONLY, newest first.
+ *
+ * Explicitly bounded and explicitly named that way. This used to be
+ * getApprovedInstances() with .limit(5000), which read as "effectively all of
+ * them" but was not: PostgREST clips any limit above its own server-side
+ * max-rows, silently, so the 5000 was decorative. Worse, getAchievementsOverview
+ * summed lifetime earnings off the resulting array — money derived from a capped
+ * read, the fourth instance of the truncation class.
+ *
+ * Totals now come from member_earnings_summary(); this feeds the child's
+ * "Completed" list, where showing the most recent N is the correct behaviour
+ * anyway. NEVER sum money from this.
+ */
+const RECENT_APPROVED_LIMIT = 300
+
+export async function getRecentApprovedInstances(
+  memberId: string
+): Promise<AssignmentWithChore[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
     .select('*, chore:chores(*)')
@@ -416,15 +434,65 @@ export async function getApprovedInstances(memberId: string): Promise<Assignment
     .eq('is_template', false)
     .eq('status', 'approved')
     .order('approved_at', { ascending: false })
-    .limit(5000)
+    .limit(RECENT_APPROVED_LIMIT)
   if (error) throw error
   return (data ?? []) as AssignmentWithChore[]
 }
 
 /**
- * Exact lifetime row counts, aggregated by Postgres. `head: true` transfers
- * no rows at all, so these stay correct however large the history grows.
+ * Approved earnings summed IN POSTGRES. `since` omitted means lifetime.
+ *
+ * Approved rows are never archived (archive_old_assignments moves only expired
+ * and rejected), so the live table is the complete history and this needs no
+ * union against chore_assignments_archive.
  */
+async function getEarningsSummary(
+  memberId: string,
+  since?: Date
+): Promise<{ totalEarned: number; approvedCount: number }> {
+  const { data, error } = await supabase.rpc('member_earnings_summary', {
+    p_member_id: memberId,
+    p_since: since ? since.toISOString() : undefined,
+  })
+  if (error) throw error
+  const row = data?.[0]
+  return { totalEarned: Number(row?.total_earned ?? 0), approvedCount: Number(row?.approved_count ?? 0) }
+}
+
+/**
+ * Approved activity collapsed to ONE ROW PER DAY, newest first.
+ *
+ * This is what lets the streaks read full history without a row cap: the result
+ * grows with days elapsed (~365/year), not chores approved. Cuddles' 73 approved
+ * rows collapse to 6 day rows, POCO's 67 to 8.
+ *
+ * `roster_count` excludes Direct Awards; `total_count` keeps them. Streaks use
+ * the former, the activity chart the latter.
+ */
+interface ApprovedDay {
+  dayMs: number
+  totalCount: number
+  rosterCount: number
+}
+
+async function getApprovedDayCounts(memberId: string): Promise<ApprovedDay[]> {
+  const { data, error } = await supabase.rpc('member_approved_day_counts', {
+    p_member_id: memberId,
+  })
+  if (error) throw error
+  return (data ?? []).map((r) => {
+    // 'YYYY-MM-DD' must be split by hand: `new Date('2026-08-31')` parses as UTC
+    // midnight, which lands on the previous local day west of Greenwich and
+    // would shift every streak by one.
+    const [y, m, d] = r.day.split('-').map(Number)
+    return {
+      dayMs: new Date(y, m - 1, d).getTime(),
+      totalCount: Number(r.total_count ?? 0),
+      rosterCount: Number(r.roster_count ?? 0),
+    }
+  })
+}
+
 async function getLifetimeCounts(memberId: string): Promise<{ total: number; done: number }> {
   const base = () =>
     supabase
@@ -510,7 +578,12 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
   const completionRate =
     dueThisWeek.length > 0 ? Math.round((doneThisWeek / dueThisWeek.length) * 100) : 0
 
-  const currentStreak = computeStreak(approvedRecent, now)
+  // Direct Awards must not extend a chore streak — a parent handing out money
+  // is not the child doing a chore. The parent dashboard and Achievements
+  // already filtered here; the child dashboard was the last screen that did
+  // not, so the same child could read a longer streak on their own Home tab
+  // than a parent saw for them.
+  const currentStreak = computeStreak(rosterInstancesOnly(approvedRecent), now)
 
   return {
     balance: member.balance ?? 0,
@@ -544,13 +617,7 @@ function rosterInstancesOnly<T extends { template_id: string | null }>(rows: T[]
   return rows.filter((r) => r.template_id !== null)
 }
 
-export function computeStreak(instances: AssignmentWithChore[], now: Date): number {
-  const approvedDays = new Set<number>()
-  for (const i of instances) {
-    if (i.status === 'approved' && i.approved_at) {
-      approvedDays.add(startOfDay(new Date(i.approved_at)).getTime())
-    }
-  }
+export function computeStreakFromDays(approvedDays: Set<number>, now: Date): number {
   if (approvedDays.size === 0) return 0
 
   let streak = 0
@@ -565,6 +632,16 @@ export function computeStreak(instances: AssignmentWithChore[], now: Date): numb
     cursor.setDate(cursor.getDate() - 1)
   }
   return streak
+}
+
+export function computeStreak(instances: AssignmentWithChore[], now: Date): number {
+  const approvedDays = new Set<number>()
+  for (const i of instances) {
+    if (i.status === 'approved' && i.approved_at) {
+      approvedDays.add(startOfDay(new Date(i.approved_at)).getTime())
+    }
+  }
+  return computeStreakFromDays(approvedDays, now)
 }
 
 /**
@@ -922,44 +999,41 @@ export interface AchievementsOverview {
 
 export async function getAchievementsOverview(memberId: string): Promise<AchievementsOverview> {
   const now = new Date()
-  // Lifetime figures come from the full approved set and server-side counts —
-  // never from getMemberInstances(), which is deliberately capped.
-  const [approved, counts] = await Promise.all([
-    getApprovedInstances(memberId),
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+
+  // Every figure here is now computed server-side. Money is summed in Postgres
+  // and activity is returned pre-grouped by day, so nothing on this screen is
+  // derived from a capped array — see getRecentApprovedInstances for the bug
+  // this replaced.
+  const [lifetime, month, days, counts] = await Promise.all([
+    getEarningsSummary(memberId),
+    getEarningsSummary(memberId, monthStart),
+    getApprovedDayCounts(memberId),
     getLifetimeCounts(memberId),
   ])
 
-  const totalEarned = approved.reduce((s, i) => s + (i.chore?.value ?? 0), 0)
+  const totalEarned = lifetime.totalEarned
+  const monthEarned = month.totalEarned
   const totalCompleted = counts.done
-
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const monthEarned = approved
-    .filter((i) => i.approved_at && new Date(i.approved_at) >= monthStart)
-    .reduce((s, i) => s + (i.chore?.value ?? 0), 0)
 
   const completionRate =
     counts.total > 0 ? Math.round((counts.done / counts.total) * 100) : 0
 
-  // Streaks only: totalEarned / monthEarned above intentionally still include
-  // Direct Awards, because an award is real money the child earned.
-  const streakRows = rosterInstancesOnly(approved)
-  const approvedDays = new Set<number>()
-  for (const i of streakRows) {
-    if (i.approved_at) approvedDays.add(startOfDay(new Date(i.approved_at)).getTime())
-  }
-  const currentStreak = computeStreak(streakRows, now)
-  const longestStreak = computeLongestStreak(approvedDays)
+  // Streaks: roster days only. totalEarned / monthEarned above intentionally
+  // still include Direct Awards, because an award is real money the child
+  // earned — it just is not a chore, so it cannot extend a streak.
+  const rosterDays = new Set(days.filter((d) => d.rosterCount > 0).map((d) => d.dayMs))
+  const currentStreak = computeStreakFromDays(rosterDays, now)
+  const longestStreak = computeLongestStreak(rosterDays)
 
   // Last 7 days (oldest -> newest) count of approved chores per day.
   const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const countByDay = new Map(days.map((d) => [d.dayMs, d.totalCount]))
   const sevenDay: { label: string; count: number }[] = []
   for (let d = 6; d >= 0; d--) {
     const day = startOfDay(now)
     day.setDate(day.getDate() - d)
-    const count = approved.filter(
-      (i) => i.approved_at && startOfDay(new Date(i.approved_at)).getTime() === day.getTime()
-    ).length
-    sevenDay.push({ label: dayLabels[day.getDay()], count })
+    sevenDay.push({ label: dayLabels[day.getDay()], count: countByDay.get(day.getTime()) ?? 0 })
   }
 
   return {
@@ -972,7 +1046,6 @@ export async function getAchievementsOverview(memberId: string): Promise<Achieve
     sevenDay,
   }
 }
-
 export function computeLongestStreak(approvedDays: Set<number>): number {
   if (approvedDays.size === 0) return 0
   const days = [...approvedDays].sort((a, b) => a - b)
