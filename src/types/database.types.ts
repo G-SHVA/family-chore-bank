@@ -528,42 +528,61 @@ export type Database = {
       }
       milestones: {
         Row: {
+          achieved_at: string | null
           badge_icon: string | null
+          child_initiated: boolean | null
           created_at: string | null
           created_by: string | null
+          created_by_member: string | null
           description: string | null
           family_id: string
           icon: string | null
           id: string
           is_template: boolean | null
+          status: string
           target_amount: number
           title: string
         }
         Insert: {
+          achieved_at?: string | null
           badge_icon?: string | null
+          child_initiated?: boolean | null
           created_at?: string | null
           created_by?: string | null
+          created_by_member?: string | null
           description?: string | null
           family_id: string
           icon?: string | null
           id?: string
           is_template?: boolean | null
+          status?: string
           target_amount: number
           title: string
         }
         Update: {
+          achieved_at?: string | null
           badge_icon?: string | null
+          child_initiated?: boolean | null
           created_at?: string | null
           created_by?: string | null
+          created_by_member?: string | null
           description?: string | null
           family_id?: string
           icon?: string | null
           id?: string
           is_template?: boolean | null
+          status?: string
           target_amount?: number
           title?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "milestones_created_by_member_fkey"
+            columns: ["created_by_member"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "milestones_family_id_fkey"
             columns: ["family_id"]

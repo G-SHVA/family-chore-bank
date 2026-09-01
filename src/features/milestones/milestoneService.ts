@@ -1,6 +1,21 @@
 import { supabase } from '@/lib/supabase'
 import type { Milestone } from '@/lib/supabase'
 
+/**
+ * PARENT-SET FAMILY MILESTONES ONLY.
+ *
+ * The `milestones` table also holds child-initiated savings goals
+ * (child_initiated = true) -- see features/goals/goalService. The two are
+ * completely different objects that happen to share a table, so every read here
+ * excludes goals explicitly. Without that filter a child's personal goal shows
+ * up as a family milestone on the parent's Manage tab, and on the OTHER child's
+ * Achievements screen.
+ *
+ * `IS NOT TRUE`, not `= false`: child_initiated is nullable, and in SQL a NULL
+ * never equals false. Same predicate approve_chore uses, for the same reason.
+ */
+const NOT_A_GOAL = 'child_initiated.is.null,child_initiated.is.false'
+
 export interface MilestoneInput {
   title: string
   target_amount: number
@@ -30,6 +45,7 @@ export async function getMilestones(familyId: string): Promise<Milestone[]> {
     .from('milestones')
     .select('*')
     .eq('family_id', familyId)
+    .or(NOT_A_GOAL)
     .order('target_amount')
   if (error) throw error
   return data ?? []
@@ -54,6 +70,7 @@ export async function getMilestoneProgress(
       .from('milestones')
       .select('*')
       .eq('family_id', familyId)
+      .or(NOT_A_GOAL)
       .order('target_amount'),
     supabase
       .from('milestone_progress')

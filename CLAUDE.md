@@ -297,6 +297,82 @@ bug. Do not chase without a reason.
 - 'direct-award' is a reserved category in the chores table. Rows with this
   category are one-off award receipts and are excluded from getFamilyChores()
   and all library views. Never use this category for real chores.
+- 'direct-charge' is the mirror reserved category in the EXPENSES table (added
+  2026-09-01). Rows with this category are one-off charge receipts created by
+  Direct Charge and are excluded from getFamilyExpenses(). Never use it for a
+  real expense.
+  ASYMMETRY WITH CHORES, and it matters: `chores` has an is_archived column that
+  a Direct Award's one-off row also sets, but `expenses` has NO is_archived
+  column. The category filter in getFamilyExpenses() is therefore the ENTIRE
+  mechanism keeping one-off charges out of the library — there is no second
+  layer. getFamilyExpenses is the single door both consumers use (Manage ->
+  Expenses, and Quick Add's Add Expense tab); any NEW read of `expenses` for
+  library purposes must exclude this category itself.
+  Direct Charge inserts the expenses row then calls the existing apply_expense
+  RPC; expense_application_balance_update (AFTER INSERT on expense_applications)
+  does the debit. No app code touches the balance. The optional note is stored
+  on expenses.description — expense_applications has no notes column.
+  Overdrafts are allowed by design: a parent may deliberately take a child
+  negative as a teaching moment. The UI warns but never blocks.
+
+### SCHEMA FACTS — CHILD SAVINGS GOALS (added 2026-09-01)
+
+A savings goal is a row in `milestones` with child_initiated = true. It shares
+that table with parent-set family milestones and is otherwise nothing like one.
+Columns added: child_initiated, created_by_member, status, achieved_at.
+
+- PROGRESS IS NEVER STORED. A goal's progress is min(current balance, target),
+  computed at read time. It deliberately moves BACKWARDS when the child spends —
+  that trade-off is the entire point of the feature. Never migrate it to a
+  stored, earnings-accumulated figure; that would ignore spending.
+- approve_chore EXCLUDES child_initiated goals from its milestone_progress loop
+  (`AND ms.child_initiated IS NOT TRUE`). Without that predicate the loop, which
+  is scoped only by family_id, would create milestone_progress rows for a goal
+  against EVERY child in the family — so one child's chore approval would
+  advance the other child's personal goal, accumulating lifetime earnings rather
+  than tracking a balance. Do not remove it.
+- `IS NOT TRUE`, never `= false`. child_initiated is nullable, and in SQL
+  NULL = false is NULL, not true — so a NULL row would be silently skipped by an
+  `= false` predicate and treated as a goal. The same reasoning drives the
+  NOT_A_GOAL filter (`child_initiated.is.null,child_initiated.is.false`) in
+  milestoneService, which keeps goals out of the parent Milestones tab and off
+  the OTHER child's Achievements screen.
+- created_by_member references family_members(id). NOTE milestones.created_by
+  already exists and references auth.users(id) — two different FKs on one table.
+  Do not mix them.
+  created_by_member is an APP-LEVEL RECORD OF AUTHORSHIP, NOT A SECURITY
+  BOUNDARY. RLS cannot enforce that a child created the goal: the "Parents can
+  manage milestones" policy checks `'parent' = ANY(role)`, and the kiosk's
+  shared session is always the `Kiosk` parent row. Child identity is app state.
+- ONE ACTIVE GOAL PER CHILD, enforced by `idx_milestones_one_active_goal` —
+  a partial unique index on (created_by_member) WHERE child_initiated = true AND
+  status = 'active'. This is the layer that survives concurrency (two tablets,
+  two taps); app-side checking is not sufficient. Abandoning or achieving a goal
+  frees the slot. goalService translates the 23505 violation into a readable
+  sentence rather than surfacing a constraint name.
+- Abandon is a SOFT delete (status = 'abandoned'), never a row delete, so the
+  child's financial history stays intact. Achieved goals are permanent and are
+  not editable — updateGoal/abandonGoal/markGoalAchieved are all guarded with
+  `.eq('status','active')` so a stale screen or a double-tap cannot rewrite an
+  achieved_at that is already set.
+- The weekly-rate estimate (getWeeklySavingsRate) EXCLUDES Direct Awards, via
+  `.not('template_id','is',null)` — the same filter streaks use. A parent's gift
+  is not the child's work, and inflating the rate with it breaks the effort ->
+  progress link the goal exists to teach. Note this differs from every other
+  money reading in the app, where an award IS real earnings. It divides by the
+  history that actually exists (1-4 weeks), not a flat 4, so a child two weeks
+  in does not read as earning half their true rate.
+
+## Dev-environment artifacts (not production bugs)
+
+- HMR WEDGE ON "Switch user" (observed 2026-09-01). After editing a component,
+  Vite's hot reload can leave the app in a state where the Switch user control
+  stops responding and only a full page reload recovers it. Verified afterwards
+  on clean loads: it works on one click from the parent layout (twice) and from
+  a child session (POCO). ChildLayout and useAuth.exitToPicker were never
+  touched by the goals work. Production has no HMR, so this cannot occur there.
+  Do not go hunting for a Switch user regression on the strength of a dev
+  session — reload first and re-test before investigating.
 
 ## Kiosk rules
 - All touch targets minimum 64px

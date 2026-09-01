@@ -21,10 +21,12 @@ import {
 import {
   getFamilyExpenses,
   applyExpense,
+  directChargeCustom,
   getRecentExpenseApplications,
 } from '@/features/expenses/expenseService'
+import { getFamilyGoals, withGoalProgress } from '@/features/goals/goalService'
 import { getActiveMembers, isChild } from '@/features/family/familyService'
-import type { Chore, Expense, FamilyMember } from '@/lib/supabase'
+import type { Chore, Expense, FamilyMember, Milestone } from '@/lib/supabase'
 import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -44,6 +46,9 @@ export default function ParentDashboard() {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [roster, setRoster] = useState<RosterEntry[]>([])
   const [recentExpenseCount, setRecentExpenseCount] = useState(0)
+  // Active savings goals keyed by the child who set them. Supplementary detail
+  // on the balance card, so a child without one simply renders as before.
+  const [goalsByChild, setGoalsByChild] = useState<Record<string, Milestone>>({})
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejecting, setRejecting] = useState<PendingApproval | null>(null)
   // Synchronous guard so a double-tap can't dispatch two approvals for one chore.
@@ -58,7 +63,7 @@ export default function ParentDashboard() {
       await generateDailyAssignments()
       const members = await getActiveMembers(familyId)
       const children = members.filter(isChild)
-      const [pa, sums, ch, ex, recent, ros] = await Promise.all([
+      const [pa, sums, ch, ex, recent, ros, goals] = await Promise.all([
         getPendingApprovals(),
         getFamilyChildSummaries(children),
         getFamilyChores(familyId),
@@ -67,6 +72,7 @@ export default function ParentDashboard() {
         // Powers the Quick Add daily-total readout: what a child's day is
         // already worth before this assignment lands on it.
         getRoster(),
+        getFamilyGoals(familyId),
       ])
       setApprovals(pa)
       setSummaries(sums)
@@ -74,6 +80,15 @@ export default function ParentDashboard() {
       setExpenses(ex)
       setRecentExpenseCount(recent.length)
       setRoster(ros)
+      // Only active goals surface here. Achieved and abandoned ones are history
+      // and belong on the Manage screen, not on a live balance card.
+      setGoalsByChild(
+        Object.fromEntries(
+          goals
+            .filter((g) => g.status === 'active' && g.created_by_member)
+            .map((g) => [g.created_by_member as string, g])
+        )
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load dashboard.')
     } finally {
@@ -260,6 +275,11 @@ export default function ParentDashboard() {
                     )}
                     {s.pendingCount > 0 && <span>{s.pendingCount} pending</span>}
                   </div>
+                  <GoalPreview
+                    goal={goalsByChild[s.member.id]}
+                    balance={s.member.balance ?? 0}
+                    currency={currency}
+                  />
                 </Card>
               ))}
             </div>
@@ -284,6 +304,50 @@ export default function ParentDashboard() {
         onClose={() => setRejecting(null)}
         onSubmit={handleReject}
       />
+    </div>
+  )
+}
+
+/**
+ * A child's savings goal on the parent's balance card: what they are working
+ * toward, without navigating anywhere. Deliberately supplementary — one line of
+ * text and a 4px rule, so it never competes with the balance figure above it.
+ *
+ * Renders nothing at all when there is no active goal, so a card for a child
+ * who has not set one is byte-identical to what it was before this feature.
+ */
+function GoalPreview({
+  goal,
+  balance,
+  currency,
+}: {
+  goal: Milestone | undefined
+  balance: number
+  currency: string
+}) {
+  if (!goal) return null
+  const progress = withGoalProgress(goal, balance)
+  return (
+    <div className="mt-3 border-t border-line pt-3">
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="min-w-0 truncate text-text-muted">
+          <span className="text-text">{goal.title}</span>
+        </span>
+        <span className="shrink-0 text-text-muted">
+          <span className="font-semibold text-antique">
+            {formatCurrency(progress.savedAmount, currency)}
+          </span>{' '}
+          of {formatCurrency(goal.target_amount, currency)}
+        </span>
+      </div>
+      {/* 4px, squared, no radius token: parent surfaces are squared throughout
+          and a rounded bar would read as a child-view element. */}
+      <div className="mt-1.5 h-1 w-full overflow-hidden bg-deep">
+        <div
+          className={cn('h-full', progress.progressPct >= 100 ? 'bg-green' : 'bg-antique')}
+          style={{ width: `${progress.progressPct}%` }}
+        />
+      </div>
     </div>
   )
 }
@@ -360,7 +424,7 @@ function QuickAdd({
   assignedBy: string
   onDone: () => Promise<unknown>
 }) {
-  const [mode, setMode] = useState<'chore' | 'expense' | 'award'>('chore')
+  const [mode, setMode] = useState<'chore' | 'expense' | 'award' | 'charge'>('chore')
   const [childId, setChildId] = useState('')
   const [itemId, setItemId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -378,6 +442,13 @@ function QuickAdd({
   const [customTitle, setCustomTitle] = useState('')
   const [customAmount, setCustomAmount] = useState('')
   const [note, setNote] = useState('')
+
+  // Direct Charge state. Held separately from the award fields for the same
+  // reason those are held separately from itemId: switching tabs must never
+  // carry a half-filled charge into an award, or vice versa.
+  const [chargeTitle, setChargeTitle] = useState('')
+  const [chargeAmount, setChargeAmount] = useState('')
+  const [chargeNote, setChargeNote] = useState('')
 
   const awardChore = chores.find((c) => c.id === awardChoreId)
   const parsedAmount = Number.parseFloat(customAmount)
@@ -418,6 +489,19 @@ function QuickAdd({
           : null
   const awardReady = awardBlockReason === null
 
+  const parsedCharge = Number.parseFloat(chargeAmount)
+  const chargeAmountValid = Number.isFinite(parsedCharge) && parsedCharge > 0
+
+  /** Same contract as awardBlockReason - a money button must say why it refuses. */
+  const chargeBlockReason: string | null = !childId
+    ? 'Select a child to charge.'
+    : !chargeTitle.trim()
+      ? 'Add a description for this charge.'
+      : !chargeAmountValid
+        ? 'Enter an amount greater than zero.'
+        : null
+  const chargeReady = chargeBlockReason === null
+
   /** Same contract for the Assign Chore / Add Expense tabs. */
   const simpleBlockReason: string | null = !childId
     ? 'Select a child first.'
@@ -436,6 +520,12 @@ function QuickAdd({
     setNote('')
   }
 
+  function resetCharge() {
+    setChargeTitle('')
+    setChargeAmount('')
+    setChargeNote('')
+  }
+
   async function submit() {
     setBusy(true)
     setDone(null)
@@ -452,6 +542,13 @@ function QuickAdd({
         await onDone()
         setDone(`Awarded ${credited} to ${childName}.`)
         resetAward()
+      } else if (mode === 'charge') {
+        const childName = children.find((c) => c.id === childId)?.display_name ?? 'them'
+        const debited = formatCurrency(parsedCharge, currency)
+        await directChargeCustom(familyId, childId, chargeTitle, parsedCharge, chargeNote)
+        await onDone()
+        setDone(`Charged ${debited} to ${childName}.`)
+        resetCharge()
       } else if (mode === 'chore') {
         await quickAssignChore(itemId, childId, assignedBy)
         await onDone()
@@ -464,8 +561,8 @@ function QuickAdd({
         setItemId('')
       }
     } catch (e) {
-      // Awards move real money, so a failure has to be visible rather than a
-      // silently rejected promise.
+      // Awards and charges move real money, so a failure has to be visible
+      // rather than a silently rejected promise.
       setError(e instanceof Error ? e.message : 'That did not go through.')
     } finally {
       setBusy(false)
@@ -509,10 +606,41 @@ function QuickAdd({
       </div>
     ) : null
 
+  /**
+   * The mirror of dailyReadout, for money leaving the account. Shows the child's
+   * balance before and after, live as the amount is typed, and warns when the
+   * charge would overdraft. The warning does NOT block: a parent may create a
+   * negative balance deliberately, as a teaching moment.
+   */
+  const chargeAfter = (selectedChild?.balance ?? 0) - (chargeAmountValid ? parsedCharge : 0)
+  const chargeReadout =
+    mode === 'charge' && selectedChild ? (
+      <div className="rounded-input border border-line bg-deep px-3 py-2 text-xs text-text-muted">
+        <div>
+          {selectedChild.display_name}'s current balance:{' '}
+          <span className="font-semibold text-antique">
+            {formatCurrency(selectedChild.balance ?? 0, currency)}
+          </span>
+        </div>
+        <div className="mt-0.5">
+          After this charge:{' '}
+          <span className={cn('font-semibold', chargeAfter < 0 ? 'text-danger' : 'text-antique')}>
+            {formatCurrency(chargeAfter, currency)}
+          </span>
+        </div>
+        {chargeAmountValid && chargeAfter < 0 && (
+          <div className="mt-1 text-danger">
+            This charge would overdraft {selectedChild.display_name}'s account.
+          </div>
+        )}
+      </div>
+    ) : null
+
   const tabs = [
     { key: 'chore', label: 'Assign Chore' },
     { key: 'expense', label: 'Add Expense' },
     { key: 'award', label: 'Direct Award' },
+    { key: 'charge', label: 'Direct Charge' },
   ] as const
 
   return (
@@ -529,6 +657,7 @@ function QuickAdd({
                 setDone(null)
                 setError(null)
                 resetAward()
+                resetCharge()
               }}
               className={cn(
                 'label-caps flex-1 rounded-input px-1 py-2 text-[11px]',
@@ -673,6 +802,71 @@ function QuickAdd({
             {awardBlockReason && (
               <p id="award-block-reason" className="text-center text-xs text-text-muted">
                 {awardBlockReason}
+              </p>
+            )}
+          </>
+        ) : mode === 'charge' ? (
+          <>
+            <div>
+              <label htmlFor="charge-desc" className={labelClass}>
+                Description
+              </label>
+              <input
+                id="charge-desc"
+                type="text"
+                value={chargeTitle}
+                onChange={(e) => setChargeTitle(e.target.value)}
+                placeholder="Pokemon cards"
+                className={cn(fieldClass, 'min-h-touch')}
+              />
+            </div>
+            <div>
+              <label htmlFor="charge-amount" className={labelClass}>
+                Amount
+              </label>
+              <input
+                id="charge-amount"
+                type="number"
+                inputMode="decimal"
+                min="0.01"
+                step="0.01"
+                aria-describedby={chargeBlockReason ? 'charge-block-reason' : undefined}
+                value={chargeAmount}
+                onChange={(e) => setChargeAmount(e.target.value)}
+                placeholder="0.00"
+                className={cn(fieldClass, 'min-h-touch')}
+              />
+            </div>
+
+            {chargeReadout}
+
+            <div>
+              <label htmlFor="charge-note" className={labelClass}>
+                Add a note (optional)
+              </label>
+              <textarea
+                id="charge-note"
+                value={chargeNote}
+                onChange={(e) => setChargeNote(e.target.value)}
+                rows={2}
+                placeholder="e.g. Pokemon cards at Target"
+                className={fieldClass}
+              />
+            </div>
+
+            <Button
+              variant="accent"
+              fullWidth
+              size="lg"
+              onClick={submit}
+              disabled={!chargeReady || busy}
+            >
+              {busy ? 'Working…' : 'Charge'}
+            </Button>
+
+            {chargeBlockReason && (
+              <p id="charge-block-reason" className="text-center text-xs text-text-muted">
+                {chargeBlockReason}
               </p>
             )}
           </>

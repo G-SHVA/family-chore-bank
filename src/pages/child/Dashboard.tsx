@@ -11,6 +11,7 @@ import {
 import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
 import { ChoreCard } from '@/components/shared/ChoreCard'
 import { Card } from '@/components/ui/Card'
+import { SavingsGoalSection } from '@/components/shared/SavingsGoal'
 import { cn, formatCurrency } from '@/lib/utils'
 
 type Filter = 'all' | 'todo' | 'pending'
@@ -19,6 +20,7 @@ export default function ChildDashboard() {
   const { memberId } = useParams()
   const { family } = useAuth()
   const currency = family?.currency ?? 'USD'
+  const familyId = family?.id
   const [data, setData] = useState<ChildDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -93,7 +95,7 @@ export default function ChildDashboard() {
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-6 overflow-hidden lg:flex-row">
       {/* Zone 1 — static header: balance + the four stat cards never scroll. */}
-      <div className="flex shrink-0 flex-col gap-4 lg:w-2/5">
+      <div className="scroll-skin flex shrink-0 flex-col gap-4 lg:w-2/5 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
         <Card>
           <div className="label-caps text-[11px] text-text-muted">Current balance</div>
           <BalanceDisplay
@@ -122,6 +124,18 @@ export default function ChildDashboard() {
           <StatCard label="Due today" value={data.dueToday} />
           <StatCard label="Completion rate" value={`${data.completionRate}%`} accent="green" />
         </div>
+
+        {/* A permanent fixture, not a tab: the goal is what turns a balance into
+            something the child is working toward. Keyed on the balance so a
+            completion that lands elsewhere re-evaluates the ring. */}
+        {memberId && familyId && (
+          <SavingsGoalSection
+            memberId={memberId}
+            familyId={familyId}
+            balance={data.balance}
+            currency={currency}
+          />
+        )}
       </div>
 
       {/* Zone 2 — today's chores scroll inside their own contained area. */}

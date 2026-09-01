@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Loader2, Flame, Gift, Users, Target, TrendingUp } from 'lucide-react'
+import { Loader2, Flame, Gift, Users, Target, TrendingUp, Trophy, PiggyBank } from 'lucide-react'
 import { BarChart, Bar, XAxis, ResponsiveContainer, Cell } from 'recharts'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -10,6 +10,8 @@ import {
   type FamilyProgress,
 } from '@/features/chores/choreService'
 import { getMilestoneProgress, type MilestoneWithProgress } from '@/features/milestones/milestoneService'
+import { getGoalHistory, withGoalProgress } from '@/features/goals/goalService'
+import type { Milestone } from '@/lib/supabase'
 import {
   getAvailableRewards,
   requestRedemption,
@@ -38,6 +40,7 @@ export default function ChildAchievements() {
   const [loading, setLoading] = useState(true)
   const [overview, setOverview] = useState<AchievementsOverview | null>(null)
   const [milestones, setMilestones] = useState<MilestoneWithProgress[]>([])
+  const [goals, setGoals] = useState<Milestone[]>([])
   const [rewards, setRewards] = useState<RewardWithAfford[]>([])
   const [familyProgress, setFamilyProgress] = useState<FamilyProgress | null>(null)
   const [balance, setBalance] = useState(0)
@@ -50,14 +53,16 @@ export default function ChildAchievements() {
     const myBalance = me?.balance ?? 0
     setBalance(myBalance)
     const children = members.filter(isChild)
-    const [ov, ms, rw, fp] = await Promise.all([
+    const [ov, ms, rw, fp, gs] = await Promise.all([
       getAchievementsOverview(memberId),
       getMilestoneProgress(familyId, memberId),
       getAvailableRewards(familyId, myBalance),
       getFamilyProgress(children),
+      getGoalHistory(memberId),
     ])
     setOverview(ov)
     setMilestones(ms)
+    setGoals(gs)
     setRewards(rw)
     setFamilyProgress(fp)
     setLoading(false)
@@ -166,30 +171,57 @@ export default function ChildAchievements() {
       )}
 
       {tab === 'milestones' && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {milestones.length === 0 ? (
-            <div className="sm:col-span-2">
+        <div className="flex flex-col gap-6">
+          {/* The child's OWN goals come first. A goal they chose means more than
+              a milestone handed to them, and burying it under the family list
+              would say the opposite. */}
+          <section className="flex flex-col gap-3">
+            <h3 className="text-xl">My Goals</h3>
+            {goals.length === 0 ? (
               <EmptyState
-                icon={Target}
-                title="No milestones yet"
-                subtitle="Your parents can set savings goals for you to reach."
+                icon={PiggyBank}
+                title="No goals yet"
+                subtitle="Set a savings goal on your home screen to start one."
               />
-            </div>
-          ) : (
-            milestones.map((m) => (
-              <Card key={m.id} className="flex items-center gap-4">
-                <Ring pct={m.progressPct} done={!!m.completedAt} />
-                <div className="min-w-0">
-                  <div className="display truncate text-lg">{m.title}</div>
-                  <div className="text-sm text-text-muted">
-                    {formatCurrency(m.currentAmount, currency)} /{' '}
-                    {formatCurrency(m.target_amount, currency)}
-                  </div>
-                  {m.completedAt && <div className="label-caps text-[10px] text-green">Unlocked!</div>}
+            ) : (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {goals.map((g) => (
+                  <GoalRecord key={g.id} goal={g} balance={balance} currency={currency} />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="flex flex-col gap-3">
+            <h3 className="text-xl">Family Milestones</h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {milestones.length === 0 ? (
+                <div className="sm:col-span-2">
+                  <EmptyState
+                    icon={Target}
+                    title="No milestones yet"
+                    subtitle="Your parents can set savings goals for you to reach."
+                  />
                 </div>
-              </Card>
-            ))
-          )}
+              ) : (
+                milestones.map((m) => (
+                  <Card key={m.id} className="flex items-center gap-4">
+                    <Ring pct={m.progressPct} done={!!m.completedAt} />
+                    <div className="min-w-0">
+                      <div className="display truncate text-lg">{m.title}</div>
+                      <div className="text-sm text-text-muted">
+                        {formatCurrency(m.currentAmount, currency)} /{' '}
+                        {formatCurrency(m.target_amount, currency)}
+                      </div>
+                      {m.completedAt && (
+                        <div className="label-caps text-[10px] text-green">Unlocked!</div>
+                      )}
+                    </div>
+                  </Card>
+                ))
+              )}
+            </div>
+          </section>
         </div>
       )}
 
@@ -269,6 +301,77 @@ export default function ChildAchievements() {
       )}
     </div>
   )
+}
+
+/**
+ * One goal in the child's permanent record.
+ *
+ * An achieved goal is celebrated — trophy, the date, and the amount saved.
+ * An abandoned one is recorded plainly and NOT celebrated: it is still part of
+ * their financial history and worth seeing, but it is not an achievement.
+ * An active goal shows live progress against the current balance.
+ */
+function GoalRecord({
+  goal,
+  balance,
+  currency,
+}: {
+  goal: Milestone
+  balance: number
+  currency: string
+}) {
+  const achieved = goal.status === 'achieved'
+  const abandoned = goal.status === 'abandoned'
+  const live = withGoalProgress(goal, balance)
+  const pct = achieved ? 100 : abandoned ? 0 : live.progressPct
+
+  return (
+    <Card className={cn('flex items-center gap-4', abandoned && 'opacity-60')}>
+      {abandoned ? (
+        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border border-line text-text-muted">
+          <PiggyBank className="h-7 w-7" />
+        </div>
+      ) : achieved ? (
+        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border border-green/40 bg-green/10 text-green">
+          <Trophy className="h-7 w-7" />
+        </div>
+      ) : (
+        <Ring pct={pct} done={false} />
+      )}
+      <div className="min-w-0">
+        <div className="display truncate text-lg">{goal.title}</div>
+        {achieved ? (
+          <>
+            <div className="text-sm text-text-muted">
+              Saved {formatCurrency(goal.target_amount, currency)}
+            </div>
+            <div className="label-caps text-[10px] text-green">
+              Achieved{goal.achieved_at ? ` \u00b7 ${formatGoalDate(goal.achieved_at)}` : ''}
+            </div>
+          </>
+        ) : abandoned ? (
+          <>
+            <div className="text-sm text-text-muted">
+              Goal was {formatCurrency(goal.target_amount, currency)}
+            </div>
+            <div className="label-caps text-[10px] text-text-muted">Abandoned</div>
+          </>
+        ) : (
+          <>
+            <div className="text-sm text-text-muted">
+              {formatCurrency(live.savedAmount, currency)} /{' '}
+              {formatCurrency(goal.target_amount, currency)}
+            </div>
+            <div className="label-caps text-[10px] text-antique">In progress</div>
+          </>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function formatGoalDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 function StatBox({ label, value }: { label: string; value: string | number }) {
