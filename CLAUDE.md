@@ -408,14 +408,23 @@ warn you it has gone stale.
   targets. Use dynamic import() on route level — each page loads only what it
   needs.
 
-- MIGRATION HISTORY IS INCOMPLETE IN THE REPO. Audited 2026-09-01: the live
-  project has 17 applied migrations, supabase/migrations/ holds 7 of them.
-  A schema rebuild from this repo alone WOULD NOT PRODUCE A WORKING DATABASE —
-  approve_chore, apply_expense, the archive table and archive_old_assignments
-  are all live-only. See "Migration audit" below for the exact list. Resolve
-  before any environment is ever rebuilt from the repo, and before a second
-  developer or a staging project exists.
-  Two secondary notes: the four pre-existing repo files are named with rounded
+- SCHEMA COMPLETENESS — supabase/migrations/ is not rebuildable from scratch.
+  Base tables, triggers, and RLS policies predate migration history. Before a
+  second developer joins or a staging environment is created, run
+  supabase db dump against the live project and commit as
+  migration_000_baseline_dump.sql. Verify a fresh Supabase project can be
+  initialized from the repo alone.
+
+- MIGRATION HISTORY — RESOLVED FOR APPLIED MIGRATIONS, 2026-09-01. The live
+  project has 17 applied migrations. The repo captured 5 of them; the 2026-09-01
+  backfill added the session's own two, and the baseline
+  (20260901220000_baseline_live_schema.sql) captured the objects created by the
+  remaining ten. approve_chore, apply_expense, chore_assignments_archive and
+  archive_old_assignments are all now in the repo, read from the live database
+  rather than reconstructed. See "Migration audit" below for the mapping.
+  This does NOT make the repo rebuildable — see SCHEMA COMPLETENESS above; the
+  baseline ALTERs tables the repo still never creates.
+  One secondary note: the four pre-existing repo files are named with rounded
   timestamps that do NOT match their remote version numbers (e.g. local
   20260831090000 vs remote 20260831123242), so `supabase db push` would treat
   them as new and try to re-apply them. The two files added 2026-09-01 use the
@@ -609,18 +618,29 @@ it edits a function the repo never creates. Same for the archive feature: the
 table, its FKs (load-bearing for PostgREST embedding) and archive_old_assignments
 are live-only. `apply_expense` has no repo file at all.
 
-RECOMMENDED FIX, not yet done — it is a real structural decision, not a
-mechanical backfill, so it was left for an explicit call:
+DONE 2026-09-01 — 20260901220000_baseline_live_schema.sql now captures the
+objects those ten migrations created: families.member_pins, the
+chore_assignments roster columns + template FK + seven indexes,
+chore_assignments_archive (table, four FKs, three indexes, RLS + policy),
+apply_expense, and archive_old_assignments with its service_role-only EXECUTE
+grant. Every definition was read from the live database — pg_get_functiondef
+for bodies, information_schema / pg_indexes / pg_constraint / pg_policies for
+structure — not reconstructed.
 
-Write ONE baseline migration capturing current live state (dump the definitions
-of approve_chore, apply_expense, archive_old_assignments, the archive table +
-FKs, chore_assignments template/roster columns, families.member_pins) rather
-than reconstructing ten historical files. Four of the ten are successive
-refinements of the same two functions — 'harden', 'lock_then_check',
-'defer_balance_to_triggers' are intermediate states that no longer exist
-anywhere and cannot be faithfully recovered. Replaying that lineage would be
-inventing history; a baseline states the truth.
+approve_chore is deliberately NOT in the baseline: 20260901213410 already holds
+its current state and sorts earlier. Two files defining the app's most
+safety-critical function would be two sources of truth.
 
-Until that exists, the live database is the only complete source of schema
-truth. Do not treat supabase/migrations/ as authoritative, and never rebuild an
-environment from it expecting a working app.
+No intermediate states were invented. 'harden', 'lock_then_check' and
+'defer_balance_to_triggers' are refinements of the same two functions that no
+longer exist anywhere; only the final converged version is recorded. That is
+the honest limit of what a baseline can say.
+
+STILL OUTSTANDING — the base schema. The earliest live migration
+(20260808214850) ALTERs `families`, so every base table, the three balance
+triggers with their update_balance_on_* functions, and all base RLS policies
+predate the migration history and have no file anywhere. The baseline ALTERs
+and references tables the repo never creates, so a from-scratch rebuild still
+fails on the first statement. The live database therefore remains the only
+complete source of schema truth. See SCHEMA COMPLETENESS in the pre-launch
+checklist for the fix.
