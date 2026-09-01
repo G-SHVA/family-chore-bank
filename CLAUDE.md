@@ -402,6 +402,25 @@ warn you it has gone stale.
 
 ## Pre-launch checklist
 
+- Bundle size: 1,053 kB JS chunk (297 kB gzipped). Exceeds Vite 500 kB warning.
+  Code-split before public launch. Primary candidates: Recharts (analytics),
+  Framer Motion (animations), goalService/analyticsService are good lazy-load
+  targets. Use dynamic import() on route level — each page loads only what it
+  needs.
+
+- MIGRATION HISTORY IS INCOMPLETE IN THE REPO. Audited 2026-09-01: the live
+  project has 17 applied migrations, supabase/migrations/ holds 7 of them.
+  A schema rebuild from this repo alone WOULD NOT PRODUCE A WORKING DATABASE —
+  approve_chore, apply_expense, the archive table and archive_old_assignments
+  are all live-only. See "Migration audit" below for the exact list. Resolve
+  before any environment is ever rebuilt from the repo, and before a second
+  developer or a staging project exists.
+  Two secondary notes: the four pre-existing repo files are named with rounded
+  timestamps that do NOT match their remote version numbers (e.g. local
+  20260831090000 vs remote 20260831123242), so `supabase db push` would treat
+  them as new and try to re-apply them. The two files added 2026-09-01 use the
+  exact remote version as their prefix, which is the convention to follow.
+
 - families.timezone column reads 'UTC' but client and the daily dedup index
   both use America/Chicago. Reconcile before multi-family launch — either
   populate timezone from family settings or make the index timezone-aware
@@ -556,3 +575,52 @@ This is housekeeping, not a space fix — see the footprint numbers above.
 - Commit .env.local
 - Hardcode Supabase keys
 - Use emoji as icons
+
+## Migration audit — 2026-09-01
+
+Compared `supabase/migrations/` against the live project's applied migration
+history. 17 migrations are applied remotely; the repo captures 7.
+
+CAPTURED IN THE REPO (7):
+- 20260828212105 pin_server_side_verification_additive
+- 20260828214445 pin_lockdown_revoke_member_pins_read          } both in the
+- 20260828214551 pin_attempts_revoke_client_grants             } bcrypt file
+- 20260831123242 chore_assignment_daily_dedup_index
+- 20260831133207 member_earnings_and_approved_day_aggregates
+- 20260901213153 add_child_savings_goals_to_milestones      (backfilled)
+- 20260901213410 approve_chore_exclude_child_initiated_goals (backfilled)
+
+LIVE BUT NOT IN THE REPO (10) — all predate 2026-09-01:
+- 20260808214850 add_member_pins_to_families
+- 20260808224423 add_template_fields_to_chore_assignments
+- 20260808225955 balance_rpcs_approve_chore_apply_expense          <- RPC
+- 20260808230648 harden_approve_chore_idempotent_credit            <- RPC
+- 20260808231323 approve_chore_lock_then_check                     <- RPC
+- 20260808231811 rpcs_defer_balance_to_existing_triggers           <- RPC
+- 20260811235409 chore_roster_lifecycle
+- 20260830213305 create_chore_assignments_archive
+- 20260830213343 create_archive_old_assignments                    <- RPC
+- 20260830213428 archive_foreign_keys_for_postgrest_embedding
+
+WHAT THIS MEANS. Every RPC on the money path — approve_chore and apply_expense —
+was created and hardened by migrations 3 through 6 above, none of which exist as
+files. The 2026-09-01 file only carries CREATE OR REPLACE for approve_chore, so
+it edits a function the repo never creates. Same for the archive feature: the
+table, its FKs (load-bearing for PostgREST embedding) and archive_old_assignments
+are live-only. `apply_expense` has no repo file at all.
+
+RECOMMENDED FIX, not yet done — it is a real structural decision, not a
+mechanical backfill, so it was left for an explicit call:
+
+Write ONE baseline migration capturing current live state (dump the definitions
+of approve_chore, apply_expense, archive_old_assignments, the archive table +
+FKs, chore_assignments template/roster columns, families.member_pins) rather
+than reconstructing ten historical files. Four of the ten are successive
+refinements of the same two functions — 'harden', 'lock_then_check',
+'defer_balance_to_triggers' are intermediate states that no longer exist
+anywhere and cannot be faithfully recovered. Replaying that lineage would be
+inventing history; a baseline states the truth.
+
+Until that exists, the live database is the only complete source of schema
+truth. Do not treat supabase/migrations/ as authoritative, and never rebuild an
+environment from it expecting a working app.
