@@ -12,19 +12,38 @@ import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
 import { ChoreCard } from '@/components/shared/ChoreCard'
 import { Card } from '@/components/ui/Card'
 import { SavingsGoalSection } from '@/components/shared/SavingsGoal'
+import { CharacterMomentBanner } from '@/components/shared/CharacterMomentBanner'
 import { cn, formatCurrency } from '@/lib/utils'
 
 type Filter = 'all' | 'todo' | 'pending'
 
 export default function ChildDashboard() {
   const { memberId } = useParams()
-  const { family } = useAuth()
+  const { family, operatorMemberId } = useAuth()
   const currency = family?.currency ?? 'USD'
   const familyId = family?.id
   const [data, setData] = useState<ChildDashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
+  // Dismissed recognitions. sessionStorage, NOT the database and NOT plain
+  // component state:
+  //   - the database would mean a schema change for a banner;
+  //   - plain state resets whenever this component unmounts, so a child who
+  //     dismissed the banner and tapped through to Chores and back would be
+  //     shown it again, which reads as the dismiss button being broken.
+  // sessionStorage survives navigation inside the session and clears when the
+  // tab closes — and seeing a recognition once more after a full restart is
+  // harmless, so that expiry is a feature rather than a limitation.
+  const [dismissed, setDismissed] = useState<Set<string>>(() => readDismissed(memberId))
+
+  function dismissMoment(id: string) {
+    setDismissed((prev) => {
+      const next = new Set(prev).add(id)
+      writeDismissed(memberId, next)
+      return next
+    })
+  }
 
   const load = useCallback(async () => {
     if (!memberId) return
@@ -92,10 +111,31 @@ export default function ChildDashboard() {
     return true
   })
 
+  const moments = data.characterMoments
+    .filter((m) => !dismissed.has(m.id))
+    // Resolve the name a CHILD should read. A recognition submitted while the
+    // tablet sat on the shared operator account would otherwise surface that
+    // account's display name — an internal detail no child should be shown —
+    // so it degrades to "Your parent". Matched on member id, not the string
+    // 'Kiosk', because the operator row is renameable like any other member.
+    .map((m) =>
+      m.awardedByMemberId && m.awardedByMemberId === operatorMemberId
+        ? { ...m, awardedBy: null }
+        : m
+    )
+
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-6 overflow-hidden lg:flex-row">
       {/* Zone 1 — static header: balance + the four stat cards never scroll. */}
       <div className="scroll-skin flex shrink-0 flex-col gap-4 lg:w-2/5 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
+        {/* Above the balance, because being noticed is the headline — the money
+            is the footnote. Renders nothing at all when there is no moment. */}
+        <CharacterMomentBanner
+          moments={moments}
+          currency={currency}
+          onDismiss={dismissMoment}
+        />
+
         <Card>
           <div className="label-caps text-[11px] text-text-muted">Current balance</div>
           <BalanceDisplay
@@ -205,4 +245,36 @@ function StatCard({
       <span className="label-caps text-[10px] text-text-muted">{label}</span>
     </Card>
   )
+}
+
+/**
+ * Per-child dismissal keys, so one child dismissing their banner never hides
+ * the other child's on a shared tablet.
+ *
+ * Every access is guarded: sessionStorage throws outright in some embedded and
+ * privacy-restricted contexts, and a celebration banner must never be the
+ * reason a child's dashboard fails to render. On any error we fall back to
+ * "nothing dismissed", which shows the banner — the harmless direction.
+ */
+function dismissKey(memberId: string | undefined): string {
+  return `fcb.characterMoments.dismissed.${memberId ?? 'unknown'}`
+}
+
+function readDismissed(memberId: string | undefined): Set<string> {
+  try {
+    const raw = sessionStorage.getItem(dismissKey(memberId))
+    if (!raw) return new Set()
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? new Set(parsed.filter((v): v is string => typeof v === 'string')) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+function writeDismissed(memberId: string | undefined, ids: Set<string>): void {
+  try {
+    sessionStorage.setItem(dismissKey(memberId), JSON.stringify([...ids]))
+  } catch {
+    // Dismissal degrades to this-mount-only. Not worth surfacing to a child.
+  }
 }

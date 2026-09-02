@@ -11,6 +11,7 @@ import ChildAchievements from '@/pages/child/Achievements'
 import { ParentLayout } from '@/components/layout/ParentLayout'
 import ParentDashboard from '@/pages/parent/Dashboard'
 import Management from '@/pages/parent/Management'
+import FamilyWeek from '@/pages/parent/FamilyWeek'
 import Settings from '@/pages/parent/Settings'
 
 function AppGate() {
@@ -30,6 +31,7 @@ function AppGate() {
       <Route path="/parent" element={<ParentLayout />}>
         <Route path="dashboard" element={<ParentDashboard />} />
         <Route path="chores" element={<Management />} />
+        <Route path="week" element={<FamilyWeek />} />
         <Route path="settings" element={<Settings />} />
       </Route>
 

@@ -337,7 +337,13 @@ function CompletionSection({
         <SubHeading note="Completed chores vs all assigned and missed">
           Completion rate
         </SubHeading>
-        <div className="h-48">
+        {/* Capped. This chart plots ONE BAR PER CHILD — two, for this family —
+            so at 1280px+ the full-width container spread them ~450px apart with
+            a void between, which reads as a rendering fault rather than a
+            comparison. The horizontal-bar charts (by category) and the weekly
+            earning trend are deliberately NOT capped: their x-axis genuinely
+            grows with the data, and width is what makes them legible. */}
+        <div className="h-48 max-w-xl">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data.byChild} margin={{ top: 18, right: 8, bottom: 4, left: 0 }}>
               <XAxis dataKey="name" tick={AXIS} axisLine={false} tickLine={false} />

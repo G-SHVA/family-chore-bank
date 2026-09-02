@@ -1,5 +1,12 @@
 import { NavLink, Outlet, Navigate, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, ClipboardList, Settings, LogOut, type LucideIcon } from 'lucide-react'
+import {
+  LayoutDashboard,
+  ClipboardList,
+  CalendarDays,
+  Settings,
+  LogOut,
+  type LucideIcon,
+} from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { isParent } from '@/features/family/familyService'
 import { cn } from '@/lib/utils'
@@ -23,6 +30,7 @@ export function ParentLayout() {
   const items: NavItem[] = [
     { to: '/parent/dashboard', label: 'Dashboard', icon: LayoutDashboard, end: true },
     { to: '/parent/chores', label: 'Manage', icon: ClipboardList },
+    { to: '/parent/week', label: 'Family Week', icon: CalendarDays },
     { to: '/parent/settings', label: 'Settings', icon: Settings },
   ]
 

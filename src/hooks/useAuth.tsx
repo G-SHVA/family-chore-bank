@@ -31,6 +31,15 @@ interface AuthContextValue {
   family: KioskFamily | null
   /** Selectable family members (excludes the kiosk operator account). */
   members: FamilyMember[]
+  /**
+   * The shared kiosk operator's family_members row id, or null.
+   *
+   * Exposed so a screen can tell "a real parent did this" from "the shared
+   * operator account did this". Compared by ID rather than by display name on
+   * purpose: the operator row is renameable in Settings like any other member,
+   * so matching the literal string 'Kiosk' would silently stop working.
+   */
+  operatorMemberId: string | null
   /** The member currently using the kiosk (null = at the picker). */
   activeMember: FamilyMember | null
   selectMember: (member: FamilyMember) => void
@@ -192,6 +201,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     session,
     family,
     members,
+    operatorMemberId,
     activeMember,
     selectMember,
     exitToPicker,

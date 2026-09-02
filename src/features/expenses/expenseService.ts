@@ -40,16 +40,46 @@ export async function createExpense(familyId: string, input: ExpenseInput): Prom
  */
 export const DIRECT_CHARGE_CATEGORY = 'direct-charge'
 
+/**
+ * Marker category for the penalty rows created by a Half Credit approval.
+ *
+ * The second reserved expense category, and it exists for the same reason as
+ * the first: a Half Credit approves the chore at FULL value through the normal
+ * RPC and then claws the difference back as a one-off charge, so the charge
+ * needs an `expenses` row to point at and that row must never reach the library.
+ *
+ * Same caveat as DIRECT_CHARGE_CATEGORY, and it is worth repeating because it
+ * is easy to get wrong: `expenses` has no is_archived column, so the exclusion
+ * in getFamilyExpenses is the ENTIRE mechanism. There is no second layer.
+ */
+export const REMINDER_PENALTY_CATEGORY = 'reminder-penalty'
+
+/**
+ * Every reserved category — the one-off bookkeeping rows that are written to
+ * `expenses` purely so a balance trigger has an amount to read, and which no
+ * library view may ever return. Add new ones HERE rather than at a call site:
+ * getFamilyExpenses is the single door both consumers go through (Manage ->
+ * Expenses, and Quick Add's Add Expense tab).
+ */
+export const RESERVED_EXPENSE_CATEGORIES = [
+  DIRECT_CHARGE_CATEGORY,
+  REMINDER_PENALTY_CATEGORY,
+] as const
+
 /** Family expense library (only family-scoped expenses are applicable under RLS). */
 export async function getFamilyExpenses(familyId: string): Promise<Expense[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from('expenses')
     .select('*')
     .eq('family_id', familyId)
     .eq('is_template', false)
-    // One-off Direct Charge rows are bookkeeping, not library expenses.
-    .neq('category', DIRECT_CHARGE_CATEGORY)
-    .order('title')
+  // One-off bookkeeping rows are not library expenses. Chained .neq() rather
+  // than a single `not in` list: it is the same AND, with no PostgREST list
+  // quoting to get wrong on a category containing a hyphen.
+  for (const category of RESERVED_EXPENSE_CATEGORIES) {
+    query = query.neq('category', category)
+  }
+  const { data, error } = await query.order('title')
   if (error) throw error
   return data ?? []
 }
@@ -145,7 +175,12 @@ export async function directChargeCustom(
   memberId: string,
   title: string,
   amount: number,
-  notes?: string | null
+  notes?: string | null,
+  // The Half Credit penalty rides this same path and differs only in which
+  // reserved category the one-off row carries, so it passes its own rather
+  // than duplicating the insert-then-apply sequence. Every existing caller
+  // omits it and behaves exactly as before.
+  category: (typeof RESERVED_EXPENSE_CATEGORIES)[number] = DIRECT_CHARGE_CATEGORY
 ): Promise<void> {
   const { data, error } = await supabase
     .from('expenses')
@@ -153,7 +188,7 @@ export async function directChargeCustom(
       family_id: familyId,
       title: title.trim(),
       amount,
-      category: DIRECT_CHARGE_CATEGORY,
+      category,
       description: notes?.trim() || null,
       is_template: false,
       // created_by is deliberately omitted: it references auth.users(id), not

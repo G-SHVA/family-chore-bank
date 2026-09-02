@@ -18,7 +18,7 @@ const TABS: { key: Tab; label: string }[] = [
 export default function Management() {
   const [tab, setTab] = useState<Tab>('chores')
   return (
-    <div className="flex flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <h1 className="spine pb-4 text-4xl">Manage</h1>
 
       <div className="flex flex-wrap gap-1 rounded-input border border-line bg-deep p-1">

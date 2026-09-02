@@ -1,6 +1,9 @@
 import { supabase } from '@/lib/supabase'
 import type { Chore, ChoreAssignment, FamilyMember } from '@/lib/supabase'
 import type { TablesInsert } from '@/types/database.types'
+// The Half Credit penalty leg. expenseService imports nothing from here, so
+// this edge introduces no cycle.
+import { directChargeCustom, REMINDER_PENALTY_CATEGORY } from '@/features/expenses/expenseService'
 
 export type Frequency = 'once' | 'daily' | 'weekly' | 'monthly'
 
@@ -370,11 +373,30 @@ export async function getActiveInstances(memberId: string): Promise<AssignmentWi
 const RECENT_WINDOW_DAYS = 90
 const RECENT_FETCH_LIMIT = 1000
 
-/** Approved rows since `since`, newest first. Date-bounded, never lifetime. */
-async function getApprovedSince(memberId: string, since: Date): Promise<AssignmentWithChore[]> {
+/**
+ * A row from getApprovedSince, which carries the awarding parent alongside the
+ * chore. The embedded member is what lets the character-recognition banner say
+ * WHO caught the child being great; every other consumer ignores it.
+ */
+export interface ApprovedWithAwarder extends AssignmentWithChore {
+  awarded_by: { display_name: string | null } | null
+}
+
+/**
+ * Approved rows since `since`, newest first. Date-bounded, never lifetime.
+ *
+ * The `awarded_by` embed is deliberately ON THIS EXISTING QUERY rather than in
+ * a second round trip: the child dashboard already reads these rows for streaks
+ * and weekly earnings, and the character-recognition banner is derived from the
+ * same array (see getChildDashboard). One extra embedded column on a read that
+ * was already happening beats a new query per dashboard load.
+ */
+async function getApprovedSince(memberId: string, since: Date): Promise<ApprovedWithAwarder[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
-    .select('*, chore:chores(*)')
+    .select(
+      '*, chore:chores(*), awarded_by:family_members!chore_assignments_assigned_by_fkey(display_name)'
+    )
     .eq('assigned_to', memberId)
     .eq('is_template', false)
     .eq('status', 'approved')
@@ -382,7 +404,7 @@ async function getApprovedSince(memberId: string, since: Date): Promise<Assignme
     .order('approved_at', { ascending: false })
     .limit(RECENT_FETCH_LIMIT)
   if (error) throw error
-  return (data ?? []) as AssignmentWithChore[]
+  return (data ?? []) as unknown as ApprovedWithAwarder[]
 }
 
 /**
@@ -446,7 +468,7 @@ export async function getRecentApprovedInstances(
  * and rejected), so the live table is the complete history and this needs no
  * union against chore_assignments_archive.
  */
-async function getEarningsSummary(
+export async function getEarningsSummary(
   memberId: string,
   since?: Date
 ): Promise<{ totalEarned: number; approvedCount: number }> {
@@ -510,6 +532,62 @@ async function getLifetimeCounts(memberId: string): Promise<{ total: number; don
   return { total: totalRes.count ?? 0, done: doneRes.count ?? 0 }
 }
 
+/**
+ * A "Caught Being Great" recognition recent enough to still celebrate.
+ *
+ * Derived, never stored. There is no notifications table in this schema and
+ * this feature does not add one: the celebration is computed from approved
+ * award rows the dashboard has ALREADY fetched, so it cannot drift out of sync
+ * with the money the way a separate record could, and it costs no extra query.
+ */
+export interface CharacterMoment {
+  id: string
+  /** What the parent typed — the throwaway chore row's title. */
+  description: string
+  amount: number
+  approvedAt: string
+  /** The awarding parent's display name, or null if the join came back empty. */
+  awardedBy: string | null
+  /** Who awarded it, so the caller can recognise the shared operator account. */
+  awardedByMemberId: string | null
+  /** The parent's optional extra note. */
+  note: string | null
+}
+
+/**
+ * How long a character recognition keeps celebrating.
+ *
+ * 48 hours, not 24, and the reason is the hardware: the wall tablet is not
+ * opened every day, so a child recognised yesterday evening would otherwise
+ * never see their own banner. Dismissal is component state only — nothing is
+ * written, and seeing it again after a full app restart is harmless.
+ */
+const CHARACTER_MOMENT_WINDOW_MS = 48 * 60 * 60 * 1000
+
+/** Pull the celebrations out of rows the dashboard already has in hand. */
+function deriveCharacterMoments(
+  approved: ApprovedWithAwarder[],
+  now: Date
+): CharacterMoment[] {
+  const cutoff = now.getTime() - CHARACTER_MOMENT_WINDOW_MS
+  return approved
+    .filter(
+      (r) =>
+        r.chore?.category === CHARACTER_MOMENT_CATEGORY &&
+        r.approved_at !== null &&
+        new Date(r.approved_at).getTime() >= cutoff
+    )
+    .map((r) => ({
+      id: r.id,
+      description: r.chore?.title ?? 'Something great',
+      amount: r.chore?.value ?? 0,
+      approvedAt: r.approved_at as string,
+      awardedBy: r.awarded_by?.display_name ?? null,
+      awardedByMemberId: r.assigned_by,
+      note: r.notes,
+    }))
+}
+
 export interface ChildDashboardData {
   balance: number
   activeChores: AssignmentWithChore[]
@@ -519,6 +597,8 @@ export interface ChildDashboardData {
   dueToday: number
   completionRate: number
   currentStreak: number
+  /** Recognitions from the last 48h, newest first. Usually empty. */
+  characterMoments: CharacterMoment[]
 }
 
 export async function getChildDashboard(memberId: string): Promise<ChildDashboardData> {
@@ -594,6 +674,9 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
     dueToday,
     completionRate,
     currentStreak,
+    // Derived from approvedRecent — already fetched above for the streak and
+    // the weekly total. No additional round trip.
+    characterMoments: deriveCharacterMoments(approvedRecent, now),
   }
 }
 
@@ -698,6 +781,103 @@ export async function approveChore(assignmentId: string, parentMemberId: string)
   if (error) throw error
 }
 
+/**
+ * How a Half Credit approval splits a chore's value, in whole cents.
+ *
+ * The CREDIT rounds DOWN and the penalty takes the remainder, so a value that
+ * does not halve cleanly resolves in the parent's favour rather than handing
+ * out a phantom cent: 25c splits 12c credited / 13c charged, not 13c/12c.
+ *
+ * Exported for the button label. The parent must be able to read the exact
+ * figure they are authorising BEFORE they tap, so the UI and the write have to
+ * derive it from one function rather than each doing its own arithmetic.
+ */
+export function splitHalfCredit(value: number | null | undefined): {
+  valueCents: number
+  creditCents: number
+  penaltyCents: number
+} {
+  const valueCents = Math.max(0, Math.round((value ?? 0) * 100))
+  const creditCents = Math.floor(valueCents / 2)
+  return { valueCents, creditCents, penaltyCents: valueCents - creditCents }
+}
+
+/** The auto-note on the degenerate no-credit path. See approveChoreHalfCredit. */
+export const HALF_CREDIT_TOO_SMALL_NOTE =
+  'Chore value too small to split — no credit issued after reminders.'
+
+/**
+ * Approve a chore at HALF its value — the book's "second reminder for a task:
+ * 50% off credit".
+ *
+ * TWO WRITES, AND NEITHER TOUCHES A BALANCE. There is no such thing as a
+ * partial credit at the database level: update_balance_on_chore_approval reads
+ * `(SELECT value FROM chores WHERE id = NEW.chore_id)`, and chore_assignments
+ * has no amount column to override it with. So the chore is approved at FULL
+ * value through the ordinary approve_chore RPC, and the difference is clawed
+ * back as a one-off penalty through the ordinary apply_expense RPC. The two
+ * existing triggers do the money, exactly as they do for every other
+ * transaction in the app.
+ *
+ * The book itself lists reminders under EXPENSE templates, so the resulting
+ * two-line ledger — the full credit, then what the reminder cost — is the
+ * faithful reading rather than a compromise. A child sees what they earned and
+ * what they lost, instead of one quietly reduced number.
+ *
+ * ORDER IS LOAD-BEARING. Approve first, penalise second. If the penalty leg
+ * fails the child keeps the full credit and the thrown error says so, so a
+ * parent can settle it with a Direct Charge. The reverse order would leave a
+ * child DEBITED for a chore that was never CREDITED if the approval failed,
+ * which is the one outcome this must never produce. Failure favours the child.
+ */
+export async function approveChoreHalfCredit(
+  assignmentId: string,
+  memberId: string,
+  parentMemberId: string,
+  familyId: string,
+  choreTitle: string | null | undefined,
+  choreValue: number | null | undefined
+): Promise<void> {
+  const { creditCents, penaltyCents } = splitHalfCredit(choreValue)
+
+  // Degenerate case: a 1c chore halves to a 0c credit. Approving would write an
+  // 'approved' row worth nothing and then charge the whole penny back — a
+  // meaningless $0.00 credit dressed up as an approval. Record it as what it
+  // actually is instead. Value 0 chores land here too, correctly.
+  if (creditCents === 0) {
+    await rejectChore(assignmentId, HALF_CREDIT_TOO_SMALL_NOTE)
+    return
+  }
+
+  await approveChore(assignmentId, parentMemberId)
+
+  if (penaltyCents === 0) return // an even value; nothing to claw back
+
+  try {
+    await directChargeCustom(
+      familyId,
+      memberId,
+      // Labelled so the lesson is explicit in the child's ledger rather than a
+      // cryptic deduction sitting under the credit it belongs to.
+      `Reminder penalty — ${choreTitle ?? 'chore'}`,
+      penaltyCents / 100,
+      'Task completed after a second reminder',
+      REMINDER_PENALTY_CATEGORY
+    )
+  } catch (e) {
+    throw new Error(
+      `The chore was approved at full credit, but the ${formatCents(penaltyCents)} reminder penalty was not applied — settle it with a Direct Charge. ${
+        e instanceof Error ? e.message : 'Unknown error.'
+      }`
+    )
+  }
+}
+
+/** Whole cents as a plain dollar string, for messages that must state an amount. */
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
 /** Reject a completed chore. The note is optional (no balance change). */
 export async function rejectChore(assignmentId: string, notes?: string): Promise<void> {
   const { error } = await supabase
@@ -765,6 +945,32 @@ export async function assignChoreToMembers(
  * getFamilyChores, which is the single door every library view goes through.
  */
 export const DIRECT_AWARD_CATEGORY = 'direct-award'
+
+/**
+ * Marker category for a "Caught Being Great" character recognition.
+ *
+ * Mechanically a Direct Award — same insert-then-approve path, same throwaway
+ * `chores` row — but kept as its OWN category rather than reusing
+ * 'direct-award', because the child dashboard identifies a celebration by
+ * exactly this value. Folding the two together would turn every ordinary
+ * parent award into a "caught you being great" banner.
+ *
+ * The book's own chore "Get Caught Serving the Family" ($0.25) is the source of
+ * the default amount; this is the spontaneous version of it, with no chore
+ * required.
+ */
+export const CHARACTER_MOMENT_CATEGORY = 'character-moment'
+
+/**
+ * Categories that exist only so a balance trigger has a row to read a value
+ * from. None of them is a library chore, and getFamilyChores — the single door
+ * every library view goes through, archived views included — excludes all of
+ * them. Add new markers HERE, never at a call site.
+ */
+export const RESERVED_CHORE_CATEGORIES = [
+  DIRECT_AWARD_CATEGORY,
+  CHARACTER_MOMENT_CATEGORY,
+] as const
 
 /**
  * Supabase rejects with a PostgrestError — a plain object, NOT an Error — so a
@@ -881,7 +1087,11 @@ export async function directAwardCustom(
   awardedBy: string,
   title: string,
   amount: number,
-  notes?: string | null
+  notes?: string | null,
+  // "Caught Being Great" rides this same path and differs only in the marker
+  // category, which is what the child dashboard matches on to raise the
+  // celebration. Every existing caller omits it and is unchanged.
+  category: (typeof RESERVED_CHORE_CATEGORIES)[number] = DIRECT_AWARD_CATEGORY
 ): Promise<void> {
   const { data, error } = await supabase
     .from('chores')
@@ -890,7 +1100,7 @@ export async function directAwardCustom(
       title: title.trim(),
       value: amount,
       frequency: 'once',
-      category: DIRECT_AWARD_CATEGORY,
+      category,
       is_template: false,
       is_custom: true,
       is_archived: true,
@@ -1088,10 +1298,12 @@ export async function getFamilyChores(
     .select('*')
     .eq('family_id', familyId)
     .eq('is_template', false)
-    // Direct Award's one-off rows are bookkeeping, not library chores. Filtered
-    // here so every consumer — including ChoresTab's "show archived" view —
-    // stays clean without each one remembering to exclude them.
-    .neq('category', DIRECT_AWARD_CATEGORY)
+  // One-off award rows are bookkeeping, not library chores. Filtered here so
+  // every consumer — including ChoresTab's "show archived" view, which would
+  // otherwise see them — stays clean without each one remembering to exclude.
+  for (const category of RESERVED_CHORE_CATEGORIES) {
+    query = query.neq('category', category)
+  }
   if (!includeArchived) query = query.eq('is_archived', false)
   const { data, error } = await query.order('title')
   if (error) throw error

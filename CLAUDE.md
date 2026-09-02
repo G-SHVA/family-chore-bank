@@ -172,6 +172,19 @@ TRUNCATION CLASS -- FOUR INSTANCES FIXED:
    history grows ~365/year instead of with chores approved -- 73 approved rows
    collapse to 6 day rows). The remaining list read is renamed
    getRecentApprovedInstances() and is display-only: NEVER sum money from it.
+5. getTransactionHistory (child My Bank ledger) -- STILL OUTSTANDING as of
+   2026-09-02. It issues TWO unbounded selects (chore_assignments joined to
+   chores, and expense_applications) and merges them client-side to build the
+   running balance. Same class as 1-4: PostgREST caps each read silently, so
+   once a child's history outgrows a page the ledger will start omitting old
+   rows AND the running balance computed from them will be wrong.
+   NOT fixed this session, deliberately: it is display-only and the fix is a
+   pagination or windowing decision about what a child's ledger should show,
+   not a one-line bound. getMonthlyBankSummary NO LONGER depends on it -- the
+   month figures were moved onto member_earnings_summary() plus a date-bounded
+   expense read on 2026-09-02, precisely so the money at the top of that screen
+   does not ride on this. Fix before public launch.
+
 Any new query against chore_assignments or chore_assignments_archive must:
 - Never rely on a row limit to filter data
 - Always specify status filters explicitly
@@ -380,6 +393,46 @@ Columns added: child_initiated, created_by_member, status, achieved_at.
 - Bottom nav on child views
 - Large readable text — minimum 16px, balance at 48px+
 
+## Family Week — "biggest win" tie-breaking (not a bug)
+
+familyWeekService picks each child's highest-value approved chore of the week
+with a plain max-by-value loop over rows ordered approved_at DESC, so the FIRST
+row wins a tie and the displayed chore is the most recently approved of the
+equal-valued ones. With a roster full of $0.25 chores, ties are the normal case,
+not the exception -- two runs against the same data can legitimately name
+different chores if new approvals land between them.
+
+Deliberately left alone (2026-09-02). The figure shown is always correct; only
+WHICH equal-valued chore gets named is unspecified. If deterministic display is
+ever wanted, break the tie on a stable secondary key -- created_at ASC -- rather
+than relying on the fetch order.
+
+Do not "fix" this by chasing a mismatch against an ad-hoc SQL query: a
+verification query using ORDER BY value DESC LIMIT 1 breaks ties arbitrarily
+too, so the two disagreeing proves nothing.
+
+## Known layout traps
+
+### Child dashboard left column — every card needs `shrink-0`
+
+The child Dashboard's left column is a height-constrained, independently
+scrolling flex column:
+
+    <div className="scroll-skin flex shrink-0 flex-col gap-4 lg:w-2/5
+                    lg:min-h-0 lg:overflow-y-auto lg:pr-2">
+
+A flex child SHRINKS before its container overflows. So a card added here
+without `shrink-0` is silently compressed instead of pushing the column into
+scroll — it does not error, it does not warn, it just renders wrong.
+
+Observed 2026-09-02 while building the "Caught Being Great" banner: the banner
+rendered as a ~30px sliver with its headline sliced through the middle. Adding
+`shrink-0` to the banner's root fixed it completely.
+
+RULE: any new card in that column carries `shrink-0` on its outermost element.
+This applies to the component's own root when the component is the flex child
+(as with CharacterMomentBanner) — putting it on an inner wrapper does nothing.
+
 ## Supabase free tier
 - Project PAUSES after 1 week of inactivity. Keep the family using it
   daily, or add a scheduled health-check ping. Revisit before beta.
@@ -407,6 +460,24 @@ warn you it has gone stale.
   Framer Motion (animations), goalService/analyticsService are good lazy-load
   targets. Use dynamic import() on route level — each page loads only what it
   needs.
+
+- ROSTER SIZE: 85 active chores across two children producing 19-28% completion
+  rates. Book recommends 3-5 chores per child to start. Review and pause
+  non-essential roster entries before public launch or onboarding new families
+  with default templates.
+  Measured 2026-09-02 via the Family Week System Health section: 56 of 85 active
+  roster entries had NO completion that week. The screen was built to surface
+  exactly this, and the first thing it surfaced was that the roster is too large
+  for the children's current stage -- the book's "Kitchen Sink" warning, live.
+
+- TRUNCATION CLASS INSTANCE 5 — getTransactionHistory (child My Bank ledger)
+  still issues two UNBOUNDED selects and derives the running balance from the
+  merged result. It needs the same treatment the other four instances got:
+  server-side aggregates for any figure, and an explicit bound (date window or
+  pagination) for the displayed list. Left alone on 2026-09-02 because it is
+  display-only and the fix is a product decision about how much history a
+  child's ledger should show, not a one-line bound. The MONTH FIGURES above it
+  no longer depend on it. Fix before public launch.
 
 - SCHEMA COMPLETENESS — supabase/migrations/ is not rebuildable from scratch.
   Base tables, triggers, and RLS policies predate migration history. Before a

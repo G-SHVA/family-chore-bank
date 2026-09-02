@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Check, X, Clock, CheckCircle2, Flame } from 'lucide-react'
+import { Loader2, Check, X, Clock, CheckCircle2, Flame, Percent, Sparkles } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
   generateDailyAssignments,
   getPendingApprovals,
   approveChore,
+  approveChoreHalfCredit,
+  splitHalfCredit,
   rejectChore,
   quickAssignChore,
   directAwardFromLibrary,
   directAwardCustom,
+  CHARACTER_MOMENT_CATEGORY,
   getFamilyChores,
   getFamilyChildSummaries,
   getRoster,
@@ -121,6 +124,36 @@ export default function ParentDashboard() {
     }
   }
 
+  /**
+   * Approve at half value — the book's "second reminder: 50% off credit".
+   *
+   * Guarded by the same inFlight set as a full approval, and for a sharper
+   * reason: this path issues TWO writes (approve, then penalise), so a double
+   * tap could credit twice and charge twice.
+   */
+  async function handleHalfCredit(a: PendingApproval) {
+    if (!activeMember || !familyId) return
+    if (inFlight.current.has(a.id)) return
+    inFlight.current.add(a.id)
+    setBusyId(a.id)
+    try {
+      await approveChoreHalfCredit(
+        a.id,
+        a.assigned_to,
+        activeMember.id,
+        familyId,
+        a.chore?.title,
+        a.chore?.value
+      )
+      await Promise.all([load(), refresh()])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Half credit failed.')
+    } finally {
+      inFlight.current.delete(a.id)
+      setBusyId(null)
+    }
+  }
+
   async function handleReject(note: string) {
     if (!rejecting) return
     const a = rejecting
@@ -148,7 +181,7 @@ export default function ParentDashboard() {
   const children = summaries.map((s) => s.member)
 
   return (
-    <div className="flex h-full flex-col gap-6 overflow-hidden">
+    <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-6 overflow-hidden">
       <h1 className="spine shrink-0 pb-4 text-4xl">Parent Dashboard</h1>
 
       {error && (
@@ -201,7 +234,7 @@ export default function ParentDashboard() {
                     exit={{ opacity: 0, x: 40 }}
                     transition={{ duration: 0.2 }}
                   >
-                    <Card className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                    <Card className="flex flex-col gap-4">
                       <div className="flex min-w-0 items-center gap-3">
                         <Avatar member={a.member} />
                         <div className="min-w-0">
@@ -217,22 +250,43 @@ export default function ParentDashboard() {
                           </div>
                         </div>
                       </div>
-                      <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                      {/* Three outcomes, all visible — never a dropdown. This
+                          is a frequent tablet action, so each is its own 64px
+                          target. Gold outline / antique outline / red outline
+                          reads as a descending scale of approval at a glance. */}
+                      <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-3">
                         <Button
                           size="lg"
                           variant="primaryList"
+                          className="px-3"
                           onClick={() => handleApprove(a)}
                           disabled={busyId === a.id}
                         >
-                          <Check className="h-5 w-5" /> Approve
+                          <Check className="h-5 w-5 shrink-0" /> Full Credit
+                        </Button>
+                        <Button
+                          size="lg"
+                          variant="accent"
+                          className="px-3"
+                          onClick={() => handleHalfCredit(a)}
+                          disabled={busyId === a.id}
+                          title="Completed after a second reminder"
+                        >
+                          <Percent className="h-5 w-5 shrink-0" />
+                          {/* The parent must see what they are authorising
+                              before they tap, so the figure is on the button
+                              and comes from the same split the write uses. */}
+                          Half ({formatCurrency(halfCreditAmount(a), currency)})
                         </Button>
                         <Button
                           size="lg"
                           variant="danger"
+                          className="px-3"
                           onClick={() => setRejecting(a)}
                           disabled={busyId === a.id}
+                          title="Completed only after multiple reminders"
                         >
-                          <X className="h-5 w-5" /> Reject
+                          <X className="h-5 w-5 shrink-0" /> No Credit
                         </Button>
                       </div>
                     </Card>
@@ -309,6 +363,27 @@ export default function ParentDashboard() {
 }
 
 /**
+ * The book's own value for "Get Caught Serving the Family". A default, not a
+ * fixed price — a parent can type any amount over it.
+ */
+const CHARACTER_MOMENT_DEFAULT = '0.25'
+
+/** The pre-filled, editable reason on the No Credit path (the book's third reminder). */
+const REMINDER_REJECT_NOTE = 'Task completed after multiple reminders'
+
+/**
+ * What a Half Credit will actually put in the child's account, in dollars.
+ *
+ * Derived from splitHalfCredit — the SAME function the write uses — so the
+ * figure printed on the button and the figure credited can never drift. On a
+ * chore too small to halve this is $0.00, and the button says so rather than
+ * promising a credit the degenerate path will not issue.
+ */
+function halfCreditAmount(a: PendingApproval): number {
+  return splitHalfCredit(a.chore?.value).creditCents / 100
+}
+
+/**
  * A child's savings goal on the parent's balance card: what they are working
  * toward, without navigating anywhere. Deliberately supplementary — one line of
  * text and a 4px rule, so it never competes with the balance figure above it.
@@ -373,34 +448,46 @@ function RejectModal({
   onSubmit: (note: string) => void
 }) {
   const [note, setNote] = useState('')
+  // Pre-populated with the reminder reason, because that is now the most common
+  // path to this modal — but it is an ordinary editable field, so a parent
+  // rejecting for quality just types over it. The generic rejection is not lost.
   useEffect(() => {
-    if (approval) setNote('')
+    if (approval) setNote(REMINDER_REJECT_NOTE)
   }, [approval])
   return (
-    <Modal open={!!approval} onClose={onClose} title="Reject chore">
+    <Modal open={!!approval} onClose={onClose} title="No credit">
       <p className="mb-4 text-text-muted">
-        “{approval?.chore?.title}” will be sent back to {approval?.member?.display_name}.
+        “{approval?.chore?.title}” will be sent back to {approval?.member?.display_name} with no
+        credit.
       </p>
       <label htmlFor="reject-note" className="label-caps mb-2 block text-[11px] text-text-muted">
-        Add a note (optional)
+        Reason (required)
       </label>
       <textarea
         id="reject-note"
         value={note}
         onChange={(e) => setNote(e.target.value)}
         rows={3}
-        placeholder="Let them know what needs improvement..."
+        placeholder="Let them know why this wasn't approved..."
         className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
       />
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
           Cancel
         </Button>
-        {/* No note is a valid rejection — the button never blocks on one. */}
-        <Button variant="danger" onClick={() => onSubmit(note.trim())}>
-          {note.trim() ? 'Reject with note' : 'Reject'}
+        {/* The note is now required: it arrives pre-filled, so an empty box means
+            the parent deliberately cleared it. A child losing the credit is owed
+            the reason — it is the only feedback channel they have (there is no
+            notifications table; the note IS the message). */}
+        <Button variant="danger" onClick={() => onSubmit(note.trim())} disabled={!note.trim()}>
+          Reject — No Credit
         </Button>
       </div>
+      {!note.trim() && (
+        <p className="mt-2 text-right text-xs text-text-muted">
+          Add a reason so they know what happened.
+        </p>
+      )}
     </Modal>
   )
 }
@@ -424,7 +511,7 @@ function QuickAdd({
   assignedBy: string
   onDone: () => Promise<unknown>
 }) {
-  const [mode, setMode] = useState<'chore' | 'expense' | 'award' | 'charge'>('chore')
+  const [mode, setMode] = useState<'chore' | 'expense' | 'award' | 'charge' | 'character'>('chore')
   const [childId, setChildId] = useState('')
   const [itemId, setItemId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -449,6 +536,14 @@ function QuickAdd({
   const [chargeTitle, setChargeTitle] = useState('')
   const [chargeAmount, setChargeAmount] = useState('')
   const [chargeNote, setChargeNote] = useState('')
+
+  // "Caught Being Great" state, held separately for the same reason every other
+  // tab's is: switching tabs must never carry a half-filled recognition into an
+  // award. The amount defaults to the book's own value for
+  // "Get Caught Serving the Family" and stays editable.
+  const [characterTitle, setCharacterTitle] = useState('')
+  const [characterAmount, setCharacterAmount] = useState(CHARACTER_MOMENT_DEFAULT)
+  const [characterNote, setCharacterNote] = useState('')
 
   const awardChore = chores.find((c) => c.id === awardChoreId)
   const parsedAmount = Number.parseFloat(customAmount)
@@ -502,6 +597,19 @@ function QuickAdd({
         : null
   const chargeReady = chargeBlockReason === null
 
+  const parsedCharacter = Number.parseFloat(characterAmount)
+  const characterAmountValid = Number.isFinite(parsedCharacter) && parsedCharacter > 0
+
+  /** Same contract as awardBlockReason — a money button must say why it refuses. */
+  const characterBlockReason: string | null = !childId
+    ? 'Select a child to recognize.'
+    : !characterTitle.trim()
+      ? 'Describe what they did.'
+      : !characterAmountValid
+        ? 'Enter an amount greater than zero.'
+        : null
+  const characterReady = characterBlockReason === null
+
   /** Same contract for the Assign Chore / Add Expense tabs. */
   const simpleBlockReason: string | null = !childId
     ? 'Select a child first.'
@@ -524,6 +632,12 @@ function QuickAdd({
     setChargeTitle('')
     setChargeAmount('')
     setChargeNote('')
+  }
+
+  function resetCharacter() {
+    setCharacterTitle('')
+    setCharacterAmount(CHARACTER_MOMENT_DEFAULT)
+    setCharacterNote('')
   }
 
   async function submit() {
@@ -549,6 +663,24 @@ function QuickAdd({
         await onDone()
         setDone(`Charged ${debited} to ${childName}.`)
         resetCharge()
+      } else if (mode === 'character') {
+        const childName = children.find((c) => c.id === childId)?.display_name ?? 'them'
+        const credited = formatCurrency(parsedCharacter, currency)
+        // The same insert-then-approve path as a custom Direct Award; only the
+        // marker category differs, and that category is what raises the
+        // celebration on the child's dashboard.
+        await directAwardCustom(
+          familyId,
+          childId,
+          assignedBy,
+          characterTitle,
+          parsedCharacter,
+          characterNote,
+          CHARACTER_MOMENT_CATEGORY
+        )
+        await onDone()
+        setDone(`Recognized ${childName} — ${credited} credited.`)
+        resetCharacter()
       } else if (mode === 'chore') {
         await quickAssignChore(itemId, childId, assignedBy)
         await onDone()
@@ -641,13 +773,18 @@ function QuickAdd({
     { key: 'expense', label: 'Add Expense' },
     { key: 'award', label: 'Direct Award' },
     { key: 'charge', label: 'Direct Charge' },
+    { key: 'character', label: 'Caught Being Great' },
   ] as const
 
   return (
     <section>
       <h2 className="mb-3 text-2xl">Quick Add</h2>
       <Card className="flex flex-col gap-3">
-        <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
+        {/* Five tabs do not fit at 375px. They scroll horizontally instead of
+            wrapping or squeezing: wrapping made the strip two rows tall and
+            pushed the form off screen, and squeezing broke the 48px target.
+            sm:flex-1 restores the even fill once there is room. */}
+        <div className="scroll-panel flex gap-1 overflow-x-auto rounded-input border border-line bg-deep p-1">
           {tabs.map((t) => (
             <button
               key={t.key}
@@ -658,9 +795,11 @@ function QuickAdd({
                 setError(null)
                 resetAward()
                 resetCharge()
+                resetCharacter()
               }}
               className={cn(
-                'label-caps flex-1 rounded-input px-1 py-2 text-[11px]',
+                'label-caps flex min-h-[48px] shrink-0 items-center justify-center',
+                'whitespace-nowrap rounded-input px-3 text-[11px] sm:flex-1',
                 mode === t.key ? 'bg-wash text-antique' : 'text-text-muted'
               )}
             >
@@ -802,6 +941,80 @@ function QuickAdd({
             {awardBlockReason && (
               <p id="award-block-reason" className="text-center text-xs text-text-muted">
                 {awardBlockReason}
+              </p>
+            )}
+          </>
+        ) : mode === 'character' ? (
+          <>
+            <p className="text-sm text-text-muted">
+              Recognize a moment of character — no chore required.
+            </p>
+
+            <div>
+              <label htmlFor="character-desc" className={labelClass}>
+                What did they do?
+              </label>
+              <input
+                id="character-desc"
+                type="text"
+                value={characterTitle}
+                onChange={(e) => setCharacterTitle(e.target.value)}
+                placeholder="e.g. Helped their sibling without being asked"
+                className={cn(fieldClass, 'min-h-touch')}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="character-amount" className={labelClass}>
+                Amount
+              </label>
+              <input
+                id="character-amount"
+                type="number"
+                inputMode="decimal"
+                min="0.01"
+                step="0.01"
+                aria-describedby={characterBlockReason ? 'character-block-reason' : undefined}
+                value={characterAmount}
+                onChange={(e) => setCharacterAmount(e.target.value)}
+                placeholder="0.25"
+                className={cn(fieldClass, 'min-h-touch')}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="character-note" className={labelClass}>
+                Add a note (optional)
+              </label>
+              <textarea
+                id="character-note"
+                value={characterNote}
+                onChange={(e) => setCharacterNote(e.target.value)}
+                rows={2}
+                placeholder="e.g. Nobody asked — they just saw it needed doing"
+                className={fieldClass}
+              />
+            </div>
+
+            {/* Antique, not primary gold — matching every other Quick Add
+                submit. DESIGN_SYSTEM.md §5 assigns this screen's single gold
+                slot to Approve and records Quick Add submit as the action that
+                stepped down. The spec asked for gold here; the design system
+                wins, because a second gold element would break the budget the
+                whole aesthetic rests on. */}
+            <Button
+              variant="accent"
+              fullWidth
+              size="lg"
+              onClick={submit}
+              disabled={!characterReady || busy}
+            >
+              <Sparkles className="h-5 w-5" /> {busy ? 'Working…' : 'Recognize'}
+            </Button>
+
+            {characterBlockReason && (
+              <p id="character-block-reason" className="text-center text-xs text-text-muted">
+                {characterBlockReason}
               </p>
             )}
           </>

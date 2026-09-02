@@ -11,6 +11,8 @@ import {
 import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/shared/EmptyState'
+import { MonthlySummaryCard } from '@/components/shared/MonthlySummaryCard'
+import { getActiveGoal } from '@/features/goals/goalService'
 import { cn, formatCurrency } from '@/lib/utils'
 
 export default function ChildBank() {
@@ -19,17 +21,22 @@ export default function ChildBank() {
   const currency = family?.currency ?? 'USD'
   const [txns, setTxns] = useState<Transaction[]>([])
   const [summary, setSummary] = useState<MonthlySummary | null>(null)
+  // Only whether a goal exists — the "saved toward goal" figure is meaningless
+  // without one, and the card needs no other detail about it.
+  const [hasActiveGoal, setHasActiveGoal] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!memberId) return
     void (async () => {
-      const [t, s] = await Promise.all([
+      const [t, s, goal] = await Promise.all([
         getTransactionHistory(memberId),
         getMonthlyBankSummary(memberId),
+        getActiveGoal(memberId),
       ])
       setTxns(t)
       setSummary(s)
+      setHasActiveGoal(goal !== null)
       setLoading(false)
     })()
   }, [memberId])
@@ -53,21 +60,19 @@ export default function ChildBank() {
           currency={currency}
           className="mt-2 block text-[56px] leading-none text-gold"
         />
-        <div className="mt-4 flex gap-6 text-sm">
-          <span className="text-text-muted">
-            Earned this month:{' '}
-            <span className="font-semibold text-green">
-              {formatCurrency(summary?.earned ?? 0, currency)}
-            </span>
-          </span>
-          <span className="text-text-muted">
-            Spent:{' '}
-            <span className="font-semibold text-danger">
-              {formatCurrency(summary?.spent ?? 0, currency)}
-            </span>
-          </span>
-        </div>
       </Card>
+
+      {/* The month's shape, directly under the balance and above the ledger.
+          The earned/spent pair that used to sit inside the balance card lives
+          here now — printing the same two figures twice, inches apart, made
+          neither one authoritative. */}
+      {summary && (
+        <MonthlySummaryCard
+          summary={summary}
+          currency={currency}
+          hasActiveGoal={hasActiveGoal}
+        />
+      )}
 
       <h2 className="mb-3 px-1 text-2xl">Transaction history</h2>
       {txns.length === 0 ? (
