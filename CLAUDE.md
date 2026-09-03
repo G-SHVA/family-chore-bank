@@ -108,6 +108,79 @@ Background: #181818 | Cards: #242424 | Gold: #E6B800
 Green: #42B883 | Text: #FFFFFF | Muted: #A0A0A0
 Border radius: 12px cards | Min touch target: 64px
 
+## SESSION BALANCE PROTOCOL — MANDATORY
+
+The children use this app daily. An unexplained balance change destroys trust
+in the system. Every session must leave balances where they were unless real
+family activity moved them.
+
+AT THE START of every session, before writing any code:
+ 1. Read CLAUDE.md.
+ 2. Query and record current balances:
+      SELECT display_name, balance FROM family_members
+      WHERE role @> ARRAY['child']
+        AND family_id = 'eaa7a6df-8ac6-40a5-8a5f-ced5dc745353';
+ 3. Record the snapshot in the session notes: POCO $X.XX, Cuddles $X.XX.
+
+AT THE END of every session, before deploying:
+ 4. Compare final balances to the snapshot.
+ 5. If any balance changed because of TESTING rather than real family activity,
+    reverse the test transactions through sanctioned paths before closing.
+ 6. Never leave test balance changes on live family accounts.
+ 7. Document intentional balance changes (real feature verification) separately
+    from test artifacts.
+
+WHY THIS EXISTS. On 2026-09-03 the loan feature was verified against POCO's and
+Cuddles' real accounts. Three test deductions totalling $15.00 were taken from
+POCO through the real money path, and an expense_applications row was deleted
+mid-session, which desynced his balance from his own ledger by $2.50. Closing
+that required a compensating Direct Charge plus the deletion of an approved
+chore_assignment — see APPROVED EXCEPTION below. None of it would have been
+necessary against a dedicated test family.
+
+NOTE the trap that made it worse: the child's My Bank header does NOT read
+family_members.balance. getTransactionHistory() sums the ledger forward from
+zero and Bank.tsx takes the header from the newest row's runningBalance. So the
+Bank screen and the dashboard can disagree, and any sanctioned write moves BOTH
+sides equally — meaning a divergence between ledger and balance cannot be
+closed by simply crediting or charging the child. Diagnose which of the two is
+wrong before acting.
+
+## Design Principles
+
+### ONE SCREEN ONE JOB
+
+Gary's design standard, informed by rejection of Salesforce and Zoho-style
+interface bloat.
+
+Every screen has exactly one primary job. Everything else is one tap away.
+- Child dashboard job: show balance and today's actionable chores.
+- Parent dashboard job: show what needs approval right now.
+
+Before adding any element to a screen, remove or collapse something else first.
+If primary content requires scrolling to reach, the screen has too much on it.
+Stat reporting belongs on dedicated reporting screens, not on action screens.
+
+Applied 2026-09-03 to the child dashboard: four stat cards removed (Achievements
+already rendered the same figures), the ALL/TO DO/PENDING chips removed, the
+savings goal collapsed from 387px to a 110px tap-to-expand row, and the chore
+list narrowed from 90 cards to 2. Left column went from 1,010px against a 559px
+fold to 428px. See getHomeChores() and the header comment in
+src/pages/child/Dashboard.tsx.
+
+### INTENTIONAL BEHAVIOR — the savings goal ring regresses
+
+Goal progress = min(balance, target), computed at read time, so the ring moves
+BACKWARDS when the balance falls: loan payments, expenses, Direct Charge. A
+loan deduction and a purchase are identical to the ring.
+
+This is the debt lesson the book describes, and it is the single most powerful
+teaching moment in the app — a child watches their goal lose ground because of
+a payment they agreed to. Observed live 2026-09-03: POCO's ring fell 36% -> 28%
+on a $2.50 loan payment, then to 0% when a later payment took him negative.
+
+DO NOT add special handling to protect goal progress from loan deductions.
+
 ## Icons
 Lucide React ONLY. Never emoji as icons.
 
@@ -252,6 +325,72 @@ duplicate approved rows were left in place so history still matches the balance.
 The index prevents any recurrence. This is likely also the source of the
 Achievements discrepancy noted below.
 
+### SESSION RECONCILIATION — 2026-09-03, $2.50 direct award
+
+POCO received a $2.50 direct award titled "Session reconciliation" to close a
+$2.50 gap between his balance and his own transaction history.
+
+ROOT CAUSE. During loan-feature verification an expense_applications row was
+DELETED so a loan could be charged twice in the same calendar month (the
+once-per-month guard keys on that row). The delete did not reverse the debit:
+expense_application_balance_update is AFTER INSERT only — the same asymmetry
+already documented above for the $0.30 chore variance. The balance stayed
+$2.50 lower than the surviving ledger explained, which the child's My Bank
+screen would have shown as a running total disagreeing with its own header.
+
+LESSON, and it is the important part: NEVER DELETE expense_applications ROWS
+ON LIVE DATA. Every balance trigger in this schema fires one way only, so any
+DELETE against the money path silently desyncs the balance from the ledger.
+Before running a destructive statement on family accounts, check the trigger
+direction — INSERT-only and UPDATE-only triggers cannot be undone by removing
+the row that fired them. Future verification sessions should use a dedicated
+test family rather than POCO and Cuddles.
+
+FULL SEQUENCE, for the record. The first correction attempt was WRONG and is
+worth keeping visible: a $2.50 direct award was applied on the theory that the
+ledger was authoritative and the balance was wrong. It was the other way round —
+POCO had genuinely been charged $2.50 + $7.50 against a $10.00 loan, so the
+balance was right and the ledger was missing a row. The award was reversed with
+a matching Direct Charge, and the phantom award row deleted under the APPROVED
+EXCEPTION below.
+
+DIAGNOSE BEFORE CORRECTING. A credit or a charge moves the ledger AND the
+balance by the same amount, so neither can ever close a gap between them. Work
+out which side is wrong first.
+
+FINAL STATE. POCO was restored to his session-start $12.47 with a $15.00 direct
+award titled "Loan feature testing — account restored", matching the $15.00 of
+test deductions ($2.50 + $7.50 + $5.00) taken during F verification. This
+inflates his lifetime earnings from $27.80 to $42.80 — a known cosmetic
+inaccuracy in Total Earned on Achievements. It does NOT affect streaks
+(rosterInstancesOnly filters awards out) or balance accuracy, and the ledger
+and balance agree at $12.47. Cuddles was never affected: $14.00 throughout,
+because forgiveness moves no money. The SESSION BALANCE PROTOCOL above was
+written this session specifically to prevent a recurrence.
+
+The correction itself went through the sanctioned path (directAwardCustom ->
+insert-as-completed -> approve_chore), so no code wrote family_members.balance.
+Cost: POCO's lifetime earnings carry a $2.50 entry that was not a real chore.
+That is visible and explainable; a silently wrong balance is neither.
+
+### APPROVED EXCEPTION — deleting an approved chore_assignment row
+
+Permitted ONLY when a Direct Charge of identical amount has been applied FIRST
+as an explicit reversal, and both actions are recorded here with the session
+date and reason.
+
+This is not a general precedent. The PAIRING is what makes it safe — charge
+first, delete second. chore_approval_balance_update is AFTER UPDATE and cannot
+be un-fired, so the credit must already be offset before the row is removed.
+Deleting first and charging afterwards leaves a window where the balance is
+wrong, and forgetting the charge entirely produces exactly the class of silent
+variance documented above.
+
+USED ONCE, 2026-09-03: assignment 4245b366 ("Session reconciliation", $2.50,
+POCO), deleted after a $2.50 Direct Charge titled "Reversal — session
+reconciliation" had already been applied. Verified afterwards: ledger earned
+$27.80, spent $30.33, running end -$2.53, family_members.balance -$2.53, agree.
+
 ### Known minor discrepancy — Achievements total earned (investigate later)
 Achievements displayed $6.90 total earned where SQL computes $7.00 over the
 same rows — a 10c gap, likely one approved chore_assignment whose joined
@@ -376,6 +515,71 @@ Columns added: child_initiated, created_by_member, status, achieved_at.
   history that actually exists (1-4 weeks), not a flat 4, so a child two weeks
   in does not read as earning half their true rate.
 
+### SCHEMA FACTS — LOANS (added 2026-09-03)
+
+A loan RECORDS A DEBT. It never transfers money. Creating one credits the child
+nothing — the parent already bought the thing; this tracks repayment. Verified
+live: POCO's balance was unchanged by loan creation.
+
+- ONE `expenses` ROW PER LOAN, not one per payment (`loans.expense_id`). Every
+  monthly deduction is a single expense_applications row pointing back at that
+  one row, so a loan costs 1 row/month rather than 2 the way Direct Charge does.
+  It also gives the "already charged this calendar month?" check a natural home
+  with no new table and no new column on a shared one.
+- `'loan-payment'` is the THIRD reserved expenses category. Same caveat as the
+  other two and it never stops mattering: `expenses` has no is_archived column,
+  so the exclusion in getFamilyExpenses() is the ENTIRE mechanism. Verified
+  2026-09-03: 31 family expenses, 28 in the library.
+  The row DOES appear in Recent expenses (the applications ledger) and that is
+  correct — the library is for managing expense types, the ledger is the
+  transaction record. reminder-penalty behaves the same way.
+- PAYMENTS ARE AUTOMATIC. There is deliberately no "Apply Payment" button
+  anywhere, and no "pay now" for the child. The parent sets the terms at
+  creation; the system handles timing. A child gets no discretion and neither
+  does a parent. "Run Monthly Deductions" exists only because the free tier has
+  no cron; after the Pro upgrade the same Edge Function runs on the 5th and the
+  button becomes a manual override.
+- process_loan_payments() takes FOR UPDATE **before** the duplicate check. A
+  read-then-write with no lock is the race that produced the duplicate chore
+  generation bug; here it would double-charge a child.
+- The final payment is LEAST(monthly_payment, balance_remaining), so a loan can
+  never be overpaid. Verified live: a $15.00 monthly payment against a $7.50
+  remaining balance charged exactly $7.50.
+- It does NOT call apply_expense(), for two independent reasons. (1) apply_expense
+  guards with is_family_parent(), which reads auth.uid(); under the service-role
+  key that is NULL and it would raise 'Not authorized' on every run. (2) it
+  deducts expenses.amount, a fixed value, which would overpay the final payment.
+  EXECUTE is granted to service_role ONLY, so the kiosk's shared authenticated
+  session cannot reach it over REST. The Edge Function is the sole door.
+- ONE ACTIVE LOAN PER CHILD via `idx_loans_one_active_per_member`, a partial
+  unique index. Verified 2026-09-03 by direct INSERT: the second active loan for
+  a member fails with 23505, and setting the first to 'forgiven' frees the slot
+  immediately. loanService translates 23505 into a readable sentence. The UI
+  additionally excludes children who already hold a loan from the New Loan
+  selector, so the constraint is a concurrency backstop, not the primary guard —
+  exactly like idx_milestones_one_active_goal.
+- FORGIVENESS DOES NOT CREDIT THE CHILD, and `balance_remaining` is NOT zeroed.
+  The remaining balance is the historical record of what was forgiven; zeroing
+  it would make the Loan History row read as though nothing was owed. `status`
+  is what makes the loan inert, and nothing reads balance_remaining on a
+  non-active loan. Forgive is guarded with .eq('status','active') so a stale
+  screen cannot rewrite a paid_off_at that is already set.
+- RLS IS FAMILY-SCOPED, NOT CHILD-SCOPED. There is deliberately no policy
+  claiming a child sees only their own loans, because RLS cannot express one:
+  the kiosk runs one shared session as the `Kiosk` parent row. The member_id
+  filter in loanService is the actual boundary. Same situation as
+  milestones.created_by_member.
+- The child-facing "paid off" / "forgiven" banner is DERIVED from
+  loans.paid_off_at inside a 48-hour window, with sessionStorage dismissal —
+  the same pattern as character recognition. No notifications table, zero new
+  rows. Forgiveness gets its own wording and its own colour (antique on bg-wash,
+  vs green for paid off): a parent cancelling a debt is a different event from a
+  child finishing one.
+- A negative balance renders in --color-text-secondary, never red and never
+  gold. The minus sign is the message and the "I owe" line explains it.
+  Overdrafts are allowed by design, and a loan payment may deliberately create
+  one. Verified live: POCO reached -$2.53 through the real money path.
+
 ## Dev-environment artifacts (not production bugs)
 
 - HMR WEDGE ON "Switch user" (observed 2026-09-01). After editing a component,
@@ -410,6 +614,39 @@ than relying on the fetch order.
 Do not "fix" this by chasing a mismatch against an ad-hoc SQL query: a
 verification query using ORDER BY value DESC LIMIT 1 breaks ties arbitrarily
 too, so the two disagreeing proves nothing.
+
+## Known development traps
+
+### REGEX TRAP — control characters written instead of escape sequences
+
+A scripted edit intended to write `` into a regex instead wrote a literal
+BACKSPACE byte (0x08), producing `/<BS>loans?$/i` — a pattern that matches
+nothing. The fix appeared to apply, `sed` printed the line looking correct
+(0x08 renders invisibly), and `tsc` passed, because it is a syntactically valid
+regex. Only the behaviour was wrong.
+
+RULE: after any scripted edit that writes a backslash escape into source, dump
+the RAW line and check it — `python -c "print(repr(line))"`, not `sed` or
+`grep`. tsc will not catch this class of error. The whole of src/ was swept for
+control characters on 2026-09-03 and is clean.
+
+### CHILD DASHBOARD LEFT COLUMN — 559px is the fold at 1024x768
+
+Header (97px) + bottom nav (72px) + main's pb-28 (112px) = 281px of fixed
+chrome, leaving 559px.
+
+Measured states (2026-09-03, at the true 390px column width):
+- balance + goal, no banner:                    280px
+- + recognition banner:                         428px
+- + active loan line (64px touch target):       504px
+- + BOTH banners (recognition AND loan          618px  <- scrolls
+  resolution) at once:
+
+The last state scrolls, and that is accepted rather than fixed. It requires two
+48-hour banners stacked simultaneously, which is an extreme edge case. Every
+card carries shrink-0 deliberately: compression is worse than scrolling one
+card's worth, and a flex child without it is silently squashed rather than
+pushing the column into scroll.
 
 ## Known layout traps
 
@@ -479,6 +716,24 @@ warn you it has gone stale.
   child's ledger should show, not a one-line bound. The MONTH FIGURES above it
   no longer depend on it. Fix before public launch.
 
+- MODAL BACKDROP SWALLOWS CLICKS DURING EXIT. The shared Modal's backdrop stays
+  clickable through its ~150ms exit animation, so the first click on any button
+  sitting underneath a just-closed modal is eaten. Reproduced three times on
+  2026-09-03 (Run Monthly Deductions and Forgive, both under a closing New Loan
+  modal). Predates the loan work and affects every screen with a modal.
+  FIX: `pointer-events: none` on the backdrop while exiting. Before public
+  launch — a parent who taps once and sees nothing happen will tap again, and on
+  a destructive control that is worse than cosmetic.
+
+- CHILD DASHBOARD QUERY BUDGET: 2 reads, as of the loan session. The completion
+  rate read (getInstancesDueBetween) was REMOVED and the loan state read
+  replaced it, so adding loans cost the most-opened screen in the app nothing.
+  getChildLoanState() answers both "is there an active loan" and "was one
+  resolved in the last 48h" in one OR-filtered query, each half bounded — one by
+  status, one by date.
+  RULE: any future addition to the child dashboard must either replace an
+  existing read or justify the addition explicitly.
+
 - SCHEMA COMPLETENESS — supabase/migrations/ is not rebuildable from scratch.
   Base tables, triggers, and RLS policies predate migration history. Before a
   second developer joins or a staging environment is created, run
@@ -512,12 +767,47 @@ warn you it has gone stale.
   sits in another zone: their day boundary would be bucketed against Chicago's,
   so a chore generated late evening local could land in the neighbouring
   bucket and either duplicate or be wrongly suppressed.
-  Also hardcoded to America/Chicago: member_approved_day_counts(), which buckets
-  approved_at into local days for the streak. Reconcile it alongside the index.
+  ALL AFFECTED LOCATIONS — reconcile every one in a single pass:
+   1. idx_ca_daily_dedup — buckets due_date by a hardcoded 'America/Chicago'
+      literal.
+   2. member_approved_day_counts() — buckets approved_at into local days for
+      the streak, same hardcoded literal.
+   3. process_loan_payments() — reads the local day-of-month for the payment_day
+      comparison and the calendar-month start for the duplicate check, same
+      hardcoded literal. [added 2026-09-03]
+   4. The CLIENT computes date windows from the BROWSER's local zone. Measured
+      2026-09-03: a 14-day rejected-chore window returned 24 rows from the app
+      and 29 from a `current_date - interval '14 days'` query, because SQL
+      resolved midnight in UTC and the client in Chicago. Five rows sat in that
+      5-hour gap. Neither was wrong; they answered different questions. Any
+      verification query MUST match the client's zone before its result can be
+      compared to what a screen shows.
   NOTE if making the index read the column: an index expression must be
   IMMUTABLE, and a subquery against families is not. That route needs the
   timezone denormalised onto chore_assignments (or a generated local-day
   column) rather than a lookup inside the index.
+
+## NEXT FEATURE — Available chores to claim
+
+Do not start this without Gary asking; recorded here so the context survives
+the session.
+
+Eve over-assigned the roster (85 entries) because the kids had no way to
+self-select chores and kept asking her to assign them manually. The roster size
+is a symptom of a missing workflow, not a judgement error — and the Family Week
+System Health screen already surfaced it (56 of 85 active entries had no
+completion in a week).
+
+SOLUTION: a small mandatory core roster (5-8 chores per child) plus a browsable
+claim library.
+
+TWO CLAIM PATHS, both requiring parent approval:
+ 1. "Do this once" — a one-time instance, status = 'requested'.
+ 2. "Add to my regular chores" — a roster addition request, approved as a new
+    template entry.
+
+SCHEMA: add 'requested' to the chore_assignments.status CHECK constraint. One
+ALTER TABLE. No new table needed.
 
 ## V2 Architecture Notes
 

@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
-import type { AssignmentWithChore } from '@/features/chores/choreService'
+import { isLapsed, type AssignmentWithChore } from '@/features/chores/choreService'
 import { Button } from '@/components/ui/Button'
 import { cn, formatCurrency } from '@/lib/utils'
 
@@ -41,7 +41,9 @@ export function ChoreCard({ assignment, currency = 'USD', onComplete }: ChoreCar
   const status = assignment.status ?? 'pending'
   // A chore whose due date has passed is missed, even if the expiry sweep
   // hasn't run yet — never offer Complete on one the server would reject.
-  const lapsed = !!assignment.due_date && new Date(assignment.due_date) < new Date()
+  // Shared with the child Home read so the screen and the query cannot drift
+  // apart about what counts as live.
+  const lapsed = isLapsed(assignment)
   const open = status === 'pending' || status === 'in_progress'
   const canComplete = open && !lapsed
   const missed = status === 'expired' || (open && lapsed)

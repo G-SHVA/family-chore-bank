@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { PiggyBank, Loader2 } from 'lucide-react'
+import { PiggyBank, Loader2, ChevronRight } from 'lucide-react'
 import type { Milestone } from '@/lib/supabase'
 import {
   getActiveGoal,
@@ -39,11 +39,24 @@ export function SavingsGoalSection({
   familyId,
   balance,
   currency,
+  compact = false,
 }: {
   memberId: string
   familyId: string
   balance: number
   currency: string
+  /**
+   * ONE SCREEN ONE JOB. The child Home screen renders this as a ~104px row —
+   * ring, name, saved-of-target — and nothing else. The full reading (weeks to
+   * go, the rate it is based on, edit, abandon) is one tap away in GoalModal,
+   * which already holds all of it.
+   *
+   * The inline card was 387px on a column with 559px of usable height at
+   * 1024x768, so the goal — the thing that gives the balance a reason — sat
+   * entirely below the fold where a child never saw it. Smaller and visible
+   * beats complete and unread.
+   */
+  compact?: boolean
 }) {
   const [goal, setGoal] = useState<Milestone | null>(null)
   const [rate, setRate] = useState<SavingsRate>({ perWeek: null, weeksUsed: 0 })
@@ -98,7 +111,7 @@ export function SavingsGoalSection({
 
   if (loading) {
     return (
-      <Card className="flex items-center justify-center gap-3 py-8 text-text-muted">
+      <Card className="flex shrink-0 items-center justify-center gap-3 py-8 text-text-muted">
         <Loader2 className="h-6 w-6 animate-spin text-antique" />
         <span className="text-base">Loading your goal…</span>
       </Card>
@@ -111,7 +124,7 @@ export function SavingsGoalSection({
   return (
     <>
       {error && (
-        <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-base text-danger">
+        <div className="shrink-0 rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-base text-danger">
           {error}
         </div>
       )}
@@ -125,12 +138,43 @@ export function SavingsGoalSection({
             void load()
           }}
         />
+      ) : progress && compact ? (
+        // COMPACT — the child Home row. Whole card is the tap target; the
+        // detail and every action live in GoalModal. shrink-0 is load-bearing:
+        // this is a flex child of a height-constrained column and would
+        // otherwise be squashed rather than push the column into scroll.
+        <Card
+          interactive
+          onClick={() => setEditing(true)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              setEditing(true)
+            }
+          }}
+          className="flex shrink-0 items-center gap-4"
+        >
+          <GoalRing pct={progress.progressPct} size={64} stroke={6} />
+          <div className="min-w-0 flex-1">
+            <div className="label-caps text-[10px] text-text-muted">My savings goal</div>
+            <div className="display truncate text-xl text-text">{goal!.title}</div>
+            <div className="text-base text-text-muted">
+              <span className="font-semibold text-antique">
+                {formatCurrency(progress.savedAmount, currency)}
+              </span>{' '}
+              of {formatCurrency(goal!.target_amount, currency)}
+            </div>
+          </div>
+          <ChevronRight aria-hidden className="h-5 w-5 shrink-0 text-text-muted" />
+        </Card>
       ) : progress ? (
         // Always stacked. A `sm:flex-row` here would key off the VIEWPORT while
         // this card actually lives in a ~330px dashboard column, so on a wide
         // tablet it went side-by-side inside a narrow column and every line
         // wrapped. The column scrolls, so the extra height is free.
-        <Card className="flex flex-col items-center gap-3">
+        <Card className="flex shrink-0 flex-col items-center gap-3">
           <GoalRing pct={progress.progressPct} size={120} />
           <div className="min-w-0 w-full text-center">
             <div className="label-caps text-[11px] text-text-muted">My savings goal</div>
@@ -161,7 +205,7 @@ export function SavingsGoalSection({
         <Card
           interactive
           onClick={() => setEditing(true)}
-          className="flex items-center gap-4"
+          className="flex shrink-0 items-center gap-4"
           role="button"
           tabIndex={0}
           onKeyDown={(e) => {
@@ -171,12 +215,21 @@ export function SavingsGoalSection({
             }
           }}
         >
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border border-antique/40 bg-wash text-antique">
-            <PiggyBank className="h-8 w-8" />
+          <div
+            className={cn(
+              'flex shrink-0 items-center justify-center rounded-full border border-antique/40 bg-wash text-antique',
+              compact ? 'h-12 w-12' : 'h-16 w-16'
+            )}
+          >
+            <PiggyBank className={compact ? 'h-6 w-6' : 'h-8 w-8'} />
           </div>
           <div className="min-w-0">
-            <div className="display text-2xl text-text">Set a savings goal</div>
-            <div className="text-lg text-text-muted">What are you saving up for?</div>
+            <div className={cn('display text-text', compact ? 'text-xl' : 'text-2xl')}>
+              Set a savings goal
+            </div>
+            {!compact && (
+              <div className="text-lg text-text-muted">What are you saving up for?</div>
+            )}
           </div>
         </Card>
       )}

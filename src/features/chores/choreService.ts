@@ -112,8 +112,26 @@ export async function expireLapsedAssignments(now: Date = new Date()): Promise<n
   return data?.length ?? 0
 }
 
-function isSameDay(a: Date, b: Date) {
-  return startOfDay(a).getTime() === startOfDay(b).getTime()
+/**
+ * Whether an instance's due date has already passed.
+ *
+ * Compared against NOW, not the start of the day: a roster instance's due_date
+ * is the end of its period, so "past" genuinely means the window closed. Never
+ * offer Complete on one of these — the server would reject it (markChoreComplete
+ * filters on pending/in_progress and the sweep expires them).
+ *
+ * Exported so ChoreCard and the child Home read share one definition of
+ * "actionable". They had separate copies; the screen and the query disagreeing
+ * about what counts as live is exactly how a chore becomes invisible.
+ */
+export function isLapsed(a: { due_date: string | null }): boolean {
+  return !!a.due_date && new Date(a.due_date) < new Date()
+}
+
+/** Open, in period, and the child can act on it right now. */
+export function isActionable(a: { due_date: string | null; status: string | null }): boolean {
+  const status = a.status ?? 'pending'
+  return (status === 'pending' || status === 'in_progress') && !isLapsed(a)
 }
 
 /* ------------------------------------------------------------------ *
@@ -365,6 +383,77 @@ export async function getActiveInstances(memberId: string): Promise<AssignmentWi
 }
 
 /**
+ * ONE SCREEN ONE JOB — the child Home read.
+ *
+ * Narrower than getActiveInstances on purpose. Home's job is "what can I do
+ * right now", so it asks only for the three statuses a child can still act on
+ * or is still waiting on:
+ *
+ *   pending / in_progress -> do it
+ *   completed             -> waiting for a parent
+ *
+ * 'rejected' is deliberately absent. Measured on POCO 2026-09-03, Home was
+ * rendering 90 cards of which 2 were actionable: 56 rejected and 32 lapsed
+ * rows, 19,511px of scroll. The child's own failures were burying the work.
+ * Rejections keep their parent's note and move to the Chores tab, grouped
+ * under a collapsed "Recent misses" (see getRejectedSince).
+ *
+ * Bounded by status, not by a row cap: all three statuses here are
+ * current-period only — at most one instance per active roster entry per
+ * period — so this read cannot grow with history the way an 'approved' or
+ * 'expired' read does. The limit is a backstop, and DESC ordering means the
+ * rows that survive it are the newest, per the rule in CLAUDE.md.
+ */
+const HOME_STATUSES = ['pending', 'in_progress', 'completed']
+
+export async function getHomeChores(memberId: string): Promise<AssignmentWithChore[]> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('*, chore:chores(*)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', false)
+    .in('status', HOME_STATUSES)
+    .order('due_date', { ascending: false })
+    .limit(ACTIVE_FETCH_LIMIT)
+  if (error) throw error
+  return (data ?? []) as AssignmentWithChore[]
+}
+
+/**
+ * Rejected instances from the last N days, for the Chores tab's "Recent
+ * misses" section.
+ *
+ * DATE-BOUNDED, not count-bounded, and that is the better of the two for the
+ * same reason every other read in this file is: a count cap silently drops
+ * rows once history outgrows it, while a date window drops exactly what it
+ * says it drops. A rejection note older than two weeks has no actionable
+ * lesson left in it anyway.
+ *
+ * The rows are not deleted and parents keep full visibility — only the
+ * CHILD's read is windowed.
+ */
+const REJECTED_WINDOW_DAYS = 14
+
+export async function getRejectedSince(
+  memberId: string,
+  days: number = REJECTED_WINDOW_DAYS
+): Promise<AssignmentWithChore[]> {
+  const since = startOfDay(new Date())
+  since.setDate(since.getDate() - days)
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('*, chore:chores(*)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', false)
+    .eq('status', 'rejected')
+    .gte('due_date', since.toISOString())
+    .order('due_date', { ascending: false })
+    .limit(ACTIVE_FETCH_LIMIT)
+  if (error) throw error
+  return (data ?? []) as AssignmentWithChore[]
+}
+
+/**
  * How far back the child dashboard reads approved history. Bounds both the
  * streak and the weekly money figures. A streak longer than this is reported
  * as this many days — a deliberate, documented ceiling, rather than the silent
@@ -405,29 +494,6 @@ async function getApprovedSince(memberId: string, since: Date): Promise<Approved
     .limit(RECENT_FETCH_LIMIT)
   if (error) throw error
   return (data ?? []) as unknown as ApprovedWithAwarder[]
-}
-
-/**
- * Every instance due inside a window, ANY status — expired included, because
- * the completion rate needs the chores that were missed as well as the ones
- * that were done. Bounded by the window, not by a row count.
- */
-async function getInstancesDueBetween(
-  memberId: string,
-  start: Date,
-  end: Date
-): Promise<AssignmentWithChore[]> {
-  const { data, error } = await supabase
-    .from('chore_assignments')
-    .select('*, chore:chores(*)')
-    .eq('assigned_to', memberId)
-    .eq('is_template', false)
-    .gte('due_date', start.toISOString())
-    .lte('due_date', end.toISOString())
-    .order('due_date', { ascending: false })
-    .limit(RECENT_FETCH_LIMIT)
-  if (error) throw error
-  return (data ?? []) as AssignmentWithChore[]
 }
 
 /**
@@ -588,14 +654,28 @@ function deriveCharacterMoments(
     }))
 }
 
+/**
+ * What the child Home screen needs — and nothing else.
+ *
+ * The four stat figures this used to carry (completedThisWeek, pendingApproval,
+ * dueToday, completionRate) were removed on 2026-09-03 under ONE SCREEN ONE JOB.
+ * They were not relocated: Achievements already rendered the same numbers, so
+ * Home was duplicating a reporting screen. `pendingApproval` and `dueToday`
+ * restated the chore list rendered beside them.
+ *
+ * completionRate is gone from every child-facing surface, Achievements
+ * included. It measures ROSTER SIZE, not the child's effort — 85 active
+ * entries across two children is what produces a 19% rate — and a child should
+ * not be handed that number daily. Parents keep it in Analytics and Family Week.
+ *
+ * Dropping it also removed a whole read per dashboard load: the week-windowed
+ * getInstancesDueBetween() existed only to compute that denominator.
+ */
 export interface ChildDashboardData {
   balance: number
+  /** Actionable only — see getHomeChores. Rejected/lapsed live on Chores. */
   activeChores: AssignmentWithChore[]
   weeklyEarnings: number
-  completedThisWeek: number
-  pendingApproval: number
-  dueToday: number
-  completionRate: number
   currentStreak: number
   /** Recognitions from the last 48h, newest first. Usually empty. */
   characterMoments: CharacterMoment[]
@@ -626,37 +706,20 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
   const streakSince = startOfDay(now)
   streakSince.setDate(streakSince.getDate() - RECENT_WINDOW_DAYS)
 
-  const [activeChores, approvedRecent, dueThisWeek] = await Promise.all([
-    getActiveInstances(memberId),
+  // Two reads, down from three. getHomeChores replaced getActiveInstances (it
+  // drops 'rejected'), and the week-windowed read went with the completion rate.
+  const [activeChores, approvedRecent] = await Promise.all([
+    getHomeChores(memberId),
     getApprovedSince(memberId, streakSince),
-    getInstancesDueBetween(memberId, weekStart, weekEnd),
   ])
 
-  const pendingApproval = activeChores.filter((i) => i.status === 'completed').length
-
-  const dueToday = activeChores.filter(
-    (i) =>
-      i.due_date &&
-      isSameDay(new Date(i.due_date), now) &&
-      (i.status === 'pending' || i.status === 'in_progress')
-  ).length
+  // The last cut: a pending row whose window has closed is a MISS, not work.
+  // getHomeChores cannot express this as a query filter, because a 'completed'
+  // row legitimately has a past due_date while it waits on a parent.
+  const homeChores = activeChores.filter((i) => isActionable(i) || i.status === 'completed')
 
   const approvedThisWeek = approvedRecent.filter((i) => inThisWeek(i.approved_at))
   const weeklyEarnings = approvedThisWeek.reduce((sum, i) => sum + (i.chore?.value ?? 0), 0)
-
-  // 'completed' rows live in the active set, 'approved' ones in the recent set.
-  const completedThisWeek = [...activeChores, ...approvedRecent].filter(
-    (i) => (i.status === 'completed' || i.status === 'approved') && inThisWeek(i.completed_at)
-  ).length
-
-  // Completion rate over this week's instances (approved+completed / all due
-  // this week). Reads the week-windowed set, which includes 'expired' — the
-  // missed chores are exactly what makes this a rate rather than a tally.
-  const doneThisWeek = dueThisWeek.filter(
-    (i) => i.status === 'approved' || i.status === 'completed'
-  ).length
-  const completionRate =
-    dueThisWeek.length > 0 ? Math.round((doneThisWeek / dueThisWeek.length) * 100) : 0
 
   // Direct Awards must not extend a chore streak — a parent handing out money
   // is not the child doing a chore. The parent dashboard and Achievements
@@ -667,12 +730,8 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
 
   return {
     balance: member.balance ?? 0,
-    activeChores,
+    activeChores: homeChores,
     weeklyEarnings,
-    completedThisWeek,
-    pendingApproval,
-    dueToday,
-    completionRate,
     currentStreak,
     // Derived from approvedRecent — already fetched above for the streak and
     // the weekly total. No additional round trip.

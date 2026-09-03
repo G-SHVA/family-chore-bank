@@ -484,6 +484,83 @@ export type Database = {
           },
         ]
       }
+      loans: {
+        Row: {
+          balance_remaining: number
+          created_at: string | null
+          created_by: string | null
+          description: string
+          expense_id: string | null
+          family_id: string
+          id: string
+          member_id: string
+          monthly_payment: number
+          paid_off_at: string | null
+          payment_day: number
+          principal: number
+          status: string
+        }
+        Insert: {
+          balance_remaining: number
+          created_at?: string | null
+          created_by?: string | null
+          description: string
+          expense_id?: string | null
+          family_id: string
+          id?: string
+          member_id: string
+          monthly_payment: number
+          paid_off_at?: string | null
+          payment_day?: number
+          principal: number
+          status?: string
+        }
+        Update: {
+          balance_remaining?: number
+          created_at?: string | null
+          created_by?: string | null
+          description?: string
+          expense_id?: string | null
+          family_id?: string
+          id?: string
+          member_id?: string
+          monthly_payment?: number
+          paid_off_at?: string | null
+          payment_day?: number
+          principal?: number
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "loans_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loans_expense_id_fkey"
+            columns: ["expense_id"]
+            isOneToOne: false
+            referencedRelation: "expenses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loans_family_id_fkey"
+            columns: ["family_id"]
+            isOneToOne: false
+            referencedRelation: "families"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loans_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       milestone_progress: {
         Row: {
           child_id: string
@@ -960,6 +1037,16 @@ export type Database = {
         Returns: {
           approved_count: number
           total_earned: number
+        }[]
+      }
+      process_loan_payments: {
+        Args: never
+        Returns: {
+          amount: number
+          description: string
+          loan_id: string
+          member_name: string
+          paid_off: boolean
         }[]
       }
       user_belongs_to_family: {

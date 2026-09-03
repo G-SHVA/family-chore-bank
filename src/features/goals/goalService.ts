@@ -39,7 +39,13 @@ export function withGoalProgress(goal: Milestone, balance: number): SavingsGoal 
   return {
     ...goal,
     savedAmount: Math.max(0, Math.min(balance, target)),
-    progressPct: target > 0 ? Math.min(100, Math.round((balance / target) * 100)) : 0,
+    // Clamped at BOTH ends. savedAmount was already floored at 0 but this was
+    // not, so an overdrawn child saw a negative percentage — "-7%" beside
+    // "$0.00 of $35.00" — on 2026-09-03 after a loan deduction took POCO to
+    // -$2.53. Overdrafts have always been possible (Direct Charge, reminder
+    // penalties); loans just made them easy to reach. A goal is 0% done when
+    // you have nothing, never less than nothing.
+    progressPct: target > 0 ? Math.max(0, Math.min(100, Math.round((balance / target) * 100))) : 0,
     remaining: Math.max(0, target - balance),
     isReached: target > 0 && balance >= target,
   }

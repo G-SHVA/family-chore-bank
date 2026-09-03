@@ -61,9 +61,26 @@ export const REMINDER_PENALTY_CATEGORY = 'reminder-penalty'
  * getFamilyExpenses is the single door both consumers go through (Manage ->
  * Expenses, and Quick Add's Add Expense tab).
  */
+/**
+ * Marker category for the single `expenses` row that backs a LOAN.
+ *
+ * The third reserved category, and the one that behaves differently from the
+ * other two: those write a throwaway row per EVENT, this writes one row per
+ * LOAN. Every monthly deduction is an expense_applications row pointing back
+ * at it, so a loan costs one row a month instead of two — and the row is what
+ * process_loan_payments() uses to answer "has this loan already been charged
+ * this calendar month?".
+ *
+ * Same caveat as the other two, and it never stops mattering: `expenses` has
+ * no is_archived column, so the exclusion in getFamilyExpenses is the ENTIRE
+ * mechanism keeping this out of the library. There is no second layer.
+ */
+export const LOAN_PAYMENT_CATEGORY = 'loan-payment'
+
 export const RESERVED_EXPENSE_CATEGORIES = [
   DIRECT_CHARGE_CATEGORY,
   REMINDER_PENALTY_CATEGORY,
+  LOAN_PAYMENT_CATEGORY,
 ] as const
 
 /** Family expense library (only family-scoped expenses are applicable under RLS). */

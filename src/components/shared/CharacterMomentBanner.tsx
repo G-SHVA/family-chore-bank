@@ -44,7 +44,7 @@ export function CharacterMomentBanner({
           // dashboard's height-constrained, scrolling left column, and a flex
           // child shrinks before its container overflows — without it the
           // banner is crushed to a ~30px sliver with the headline cut in half.
-          className="relative shrink-0 overflow-hidden rounded-card border border-antique/50 bg-wash p-5"
+          className="relative shrink-0 overflow-hidden rounded-card border border-antique/50 bg-wash p-4"
         >
           {/* Sparkles sit behind the text and never intercept a tap. */}
           <div aria-hidden className="pointer-events-none absolute inset-0">
@@ -68,33 +68,42 @@ export function CharacterMomentBanner({
             ))}
           </div>
 
-          <div className="relative flex items-start gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-input border border-antique/40 text-antique">
-              <Sparkles className="h-6 w-6" strokeWidth={1.5} />
+          {/* Headline, one detail line, and the credited amount sitting on the
+              dismiss row rather than on a line of its own. ~140px instead of
+              207px: on the child Home column this is one of three cards inside
+              559px, and a recognition that pushes the balance off the fold is
+              not doing the child a favour. Every word is unchanged. */}
+          <div className="relative flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-input border border-antique/40 text-antique">
+              <Sparkles className="h-5 w-5" strokeWidth={1.5} />
             </div>
 
             <div className="min-w-0 flex-1">
-              <h3 className="text-2xl leading-tight text-antique">
+              <h3 className="text-xl leading-tight text-antique">
                 {/* Falls back rather than naming the shared operator account:
                     the child dashboard nulls awardedBy in that case. */}
                 {m.awardedBy
                   ? `${m.awardedBy} caught you being great!`
                   : 'Your parent caught you being great!'}
               </h3>
-              <p className="mt-1 text-base text-text">{m.description}</p>
-              {m.note && <p className="mt-1 text-sm italic text-text-muted">{m.note}</p>}
-              <p className="label-caps mt-3 text-[11px] text-text-muted">
-                <span className="text-green">{formatCurrency(m.amount, currency)}</span> credited
-              </p>
+              <p className="mt-1 line-clamp-2 text-base leading-snug text-text">{m.description}</p>
+              {m.note && (
+                <p className="mt-0.5 line-clamp-1 text-sm italic text-text-muted">{m.note}</p>
+              )}
             </div>
 
-            <button
-              onClick={() => onDismiss(m.id)}
-              aria-label="Dismiss"
-              className="flex min-h-touch min-w-touch shrink-0 items-center justify-center rounded-input text-text-muted hover:bg-wash hover:text-antique"
-            >
-              <X className="h-5 w-5" />
-            </button>
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <button
+                onClick={() => onDismiss(m.id)}
+                aria-label="Dismiss"
+                className="flex min-h-touch min-w-touch items-center justify-center rounded-input text-text-muted hover:bg-wash hover:text-antique"
+              >
+                <X className="h-5 w-5" />
+              </button>
+              <span className="label-caps whitespace-nowrap text-[11px] text-text-muted">
+                <span className="text-green">{formatCurrency(m.amount, currency)}</span> credited
+              </span>
+            </div>
           </div>
         </motion.div>
       ))}

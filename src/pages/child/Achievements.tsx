@@ -138,8 +138,13 @@ export default function ChildAchievements() {
             </Card>
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
-            <StatBox label="Completion rate" value={`${overview.completionRate}%`} />
+          {/* Completion rate was removed from here on 2026-09-03, not moved.
+              It is retired from EVERY child-facing surface: it measures the
+              size of the roster (85 active entries across two children), not
+              the child's effort, so a child reading 19% is being shown a
+              parent's assignment decision as if it were their own failure.
+              Parents keep it in Analytics and on Family Week. */}
+          <div className="grid grid-cols-2 gap-4">
             <StatBox label="Chores completed" value={overview.totalCompleted} />
             <StatBox
               label="Earned this month"

@@ -6,28 +6,61 @@ import { useAuth } from '@/hooks/useAuth'
 import {
   getChildDashboard,
   markChoreComplete,
+  isActionable,
   type ChildDashboardData,
+  type AssignmentWithChore,
 } from '@/features/chores/choreService'
 import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
 import { ChoreCard } from '@/components/shared/ChoreCard'
 import { Card } from '@/components/ui/Card'
 import { SavingsGoalSection } from '@/components/shared/SavingsGoal'
 import { CharacterMomentBanner } from '@/components/shared/CharacterMomentBanner'
+import { LoanLine, LoanResolvedBanner } from '@/components/shared/LoanLine'
+import { getChildLoanState, type ChildLoanState } from '@/features/loans/loanService'
 import { cn, formatCurrency } from '@/lib/utils'
 
-type Filter = 'all' | 'todo' | 'pending'
-
+/**
+ * ONE SCREEN ONE JOB — the child Home screen.
+ *
+ * Its job is: what am I worth, and what can I do right now. Two zones, one
+ * dominant element each — the balance figure, and the actionable chore list.
+ *
+ * WHAT WAS REMOVED, 2026-09-03, and why (measured on POCO's live data):
+ *
+ *  - The four stat cards (completed this week / pending approval / due today /
+ *    completion rate), 210px. Not relocated — Achievements ALREADY rendered
+ *    the same figures, so Home was duplicating a reporting screen. "Pending
+ *    approval" and "due today" restated the very list rendered beside them.
+ *    Completion rate is gone from every child-facing surface: it measures
+ *    roster size (85 active entries across two children), not the child's
+ *    effort, and no child should be handed that number daily.
+ *
+ *  - The ALL / TO DO / PENDING chips. Home shows today's work; the Chores tab
+ *    owns filtering and already has four filters.
+ *
+ *  - 88 of 90 chore cards, via getHomeChores rather than the render. Home was
+ *    showing 90 cards — 56 rejected, 32 lapsed, 2 actionable — across 19,511px
+ *    of scroll. Rejections and misses moved to the Chores tab, grouped under a
+ *    collapsed "Recent misses" so the lesson stays reachable without being the
+ *    first thing a child sees.
+ *
+ * The left column measured 1,010px against 559px of usable height at 1024x768,
+ * so 45% of it — including the savings goal entirely — sat below the fold. It
+ * now fits without scrolling in every state.
+ */
 export default function ChildDashboard() {
   const { memberId } = useParams()
   const { family, operatorMemberId } = useAuth()
   const currency = family?.currency ?? 'USD'
   const familyId = family?.id
   const [data, setData] = useState<ChildDashboardData | null>(null)
+  const [loans, setLoans] = useState<ChildLoanState>({ active: null, resolved: null })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState<Filter>('all')
-  // Dismissed recognitions. sessionStorage, NOT the database and NOT plain
-  // component state:
+  // Dismissed one-off banners — character recognitions AND resolved loans.
+  // One set serves both: the ids are row uuids from different tables, so they
+  // cannot collide, and both are "a moment the child acknowledges once".
+  // sessionStorage, NOT the database and NOT plain component state:
   //   - the database would mean a schema change for a banner;
   //   - plain state resets whenever this component unmounts, so a child who
   //     dismissed the banner and tapped through to Chores and back would be
@@ -53,8 +86,14 @@ export default function ChildDashboard() {
       // this loader also runs after every completion, so a child working
       // through their list fired a full roster pass per chore (five in 41
       // seconds, observed). Generation belongs to the parent dashboard.
-      const dash = await getChildDashboard(memberId)
+      // One extra round trip, and only one: getChildLoanState answers both
+      // "do I owe anything" and "was a loan just resolved" in a single read.
+      const [dash, loanState] = await Promise.all([
+        getChildDashboard(memberId),
+        getChildLoanState(memberId),
+      ])
       setData(dash)
+      setLoans(loanState)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load dashboard.')
     } finally {
@@ -75,8 +114,6 @@ export default function ChildDashboard() {
             activeChores: prev.activeChores.map((c) =>
               c.id === assignmentId ? { ...c, status: 'completed' } : c
             ),
-            pendingApproval: prev.pendingApproval + 1,
-            dueToday: Math.max(0, prev.dueToday - 1),
           }
         : prev
     )
@@ -105,11 +142,10 @@ export default function ChildDashboard() {
     )
   }
 
-  const chores = data.activeChores.filter((c) => {
-    if (filter === 'todo') return c.status === 'pending' || c.status === 'in_progress'
-    if (filter === 'pending') return c.status === 'completed'
-    return true
-  })
+  // Work first, then what is waiting on a parent. Within each group, soonest
+  // first — the query orders DESC so the rows survive its cap, which is the
+  // opposite of what a to-do list wants to read.
+  const chores = sortForDisplay(data.activeChores)
 
   const moments = data.characterMoments
     .filter((m) => !dismissed.has(m.id))
@@ -126,7 +162,9 @@ export default function ChildDashboard() {
 
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-6 overflow-hidden lg:flex-row">
-      {/* Zone 1 — static header: balance + the four stat cards never scroll. */}
+      {/* Zone 1 — where I stand. Every card here carries shrink-0: this is a
+          height-constrained flex column, and a flex child without it is
+          silently compressed instead of pushing the column into scroll. */}
       <div className="scroll-skin flex shrink-0 flex-col gap-4 lg:w-2/5 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
         {/* Above the balance, because being noticed is the headline — the money
             is the footnote. Renders nothing at all when there is no moment. */}
@@ -136,14 +174,43 @@ export default function ChildDashboard() {
           onDismiss={dismissMoment}
         />
 
-        <Card>
+        {/* Resolved within 48h, derived from loans.paid_off_at — no
+            notifications table, no new rows. Sits where the recognition
+            banner sits, because it is the same kind of moment. */}
+        <AnimatePresence initial={false}>
+          {loans.resolved && !dismissed.has(loans.resolved.id) && (
+            <LoanResolvedBanner
+              key={loans.resolved.id}
+              loan={loans.resolved}
+              onDismiss={dismissMoment}
+            />
+          )}
+        </AnimatePresence>
+
+        <Card className="shrink-0">
           <div className="label-caps text-[11px] text-text-muted">Current balance</div>
           <BalanceDisplay
             amount={data.balance}
             currency={currency}
-            className="mt-2 block text-[56px] leading-none text-gold"
+            className={cn(
+              'mt-2 block text-[56px] leading-none',
+              // A negative balance is muted warm grey, never red and never
+              // gold. It is a fact, not an emergency: the minus sign is the
+              // whole message, and the "I owe" line below explains it. Gold is
+              // reserved for money the child actually has.
+              data.balance < 0 ? 'text-text-muted' : 'text-gold'
+            )}
           />
-          <div className="mt-4 flex items-center gap-4 text-sm">
+
+          {/* Inside the balance card, on a hairline, because a loan is a claim
+              against this exact number. Renders nothing when there is no
+              active loan — no placeholder, no "$0.00 owed". */}
+          {loans.active && <LoanLine loan={loans.active} currency={currency} />}
+
+          {/* One compact line, not two stat cards. Earned-this-week and the
+              streak are context for the figure above them, so they belong
+              inside its card rather than competing with it from outside. */}
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="text-text-muted">
               Earned this week:{' '}
               <span className="font-semibold text-text">
@@ -158,18 +225,12 @@ export default function ChildDashboard() {
           </div>
         </Card>
 
-        <div className="grid grid-cols-2 gap-4">
-          <StatCard label="Completed this week" value={data.completedThisWeek} />
-          <StatCard label="Pending approval" value={data.pendingApproval} accent="antique" />
-          <StatCard label="Due today" value={data.dueToday} />
-          <StatCard label="Completion rate" value={`${data.completionRate}%`} accent="green" />
-        </div>
-
         {/* A permanent fixture, not a tab: the goal is what turns a balance into
-            something the child is working toward. Keyed on the balance so a
-            completion that lands elsewhere re-evaluates the ring. */}
+            something the child is working toward. Compact here — the full
+            reading and every action are one tap away in its modal. */}
         {memberId && familyId && (
           <SavingsGoalSection
+            compact
             memberId={memberId}
             familyId={familyId}
             balance={data.balance}
@@ -178,31 +239,13 @@ export default function ChildDashboard() {
         )}
       </div>
 
-      {/* Zone 2 — today's chores scroll inside their own contained area. */}
+      {/* Zone 2 — what I can do. Scrolls inside its own contained area. */}
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:w-3/5">
-        <div className="flex shrink-0 items-center justify-between">
-          <h2 className="text-2xl text-text">My Chores</h2>
-          <div className="flex gap-1 rounded-input border border-line bg-deep p-1">
-            {(['all', 'todo', 'pending'] as Filter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={cn(
-                  'label-caps rounded-input px-4 py-2 text-[11px]',
-                  filter === f ? 'bg-wash text-antique' : 'text-text-muted'
-                )}
-              >
-                {f === 'todo' ? 'To Do' : f}
-              </button>
-            ))}
-          </div>
-        </div>
+        <h2 className="shrink-0 text-2xl text-text">My Chores</h2>
 
         {chores.length === 0 ? (
           <Card className="py-12 text-center text-text-muted">
-            {filter === 'pending'
-              ? 'Nothing waiting for approval.'
-              : 'No chores here. Nice work! 🎉'}
+            Nothing left to do right now. Nice work.
           </Card>
         ) : (
           <div className="scroll-panel flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-2">
@@ -223,28 +266,25 @@ export default function ChildDashboard() {
   )
 }
 
-function StatCard({
-  label,
-  value,
-  accent,
-}: {
-  label: string
-  value: string | number
-  accent?: 'antique' | 'green'
-}) {
-  return (
-    <Card className="flex flex-col gap-1">
-      <span
-        className={cn(
-          'display text-3xl',
-          accent === 'antique' ? 'text-antique' : accent === 'green' ? 'text-green' : 'text-text'
-        )}
-      >
-        {value}
-      </span>
-      <span className="label-caps text-[10px] text-text-muted">{label}</span>
-    </Card>
-  )
+/**
+ * Actionable chores first, then the ones waiting on a parent; soonest due
+ * first inside each group.
+ *
+ * Sorted here rather than in the query on purpose. getHomeChores orders
+ * due_date DESC so that the rows surviving its row cap are the newest — the
+ * rule CLAUDE.md sets for every read of this table — and that is precisely the
+ * wrong order to read a to-do list in. The cap is a safety net for the query;
+ * the ordering a child sees is a display decision.
+ */
+function sortForDisplay(chores: AssignmentWithChore[]): AssignmentWithChore[] {
+  const rank = (c: AssignmentWithChore) => (isActionable(c) ? 0 : 1)
+  return [...chores].sort((a, b) => {
+    const byGroup = rank(a) - rank(b)
+    if (byGroup !== 0) return byGroup
+    const da = a.due_date ? new Date(a.due_date).getTime() : Number.MAX_SAFE_INTEGER
+    const db = b.due_date ? new Date(b.due_date).getTime() : Number.MAX_SAFE_INTEGER
+    return da - db
+  })
 }
 
 /**
