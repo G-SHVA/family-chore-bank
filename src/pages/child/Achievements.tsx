@@ -22,6 +22,7 @@ import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { cn, formatCurrency } from '@/lib/utils'
+import { formatDateInZone } from '@/lib/time'
 
 type Tab = 'overview' | 'milestones' | 'rewards' | 'family'
 const TABS: { key: Tab; label: string }[] = [
@@ -376,7 +377,7 @@ function GoalRecord({
 }
 
 function formatGoalDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return formatDateInZone(new Date(iso), { month: 'short', day: 'numeric' })
 }
 
 function StatBox({ label, value }: { label: string; value: string | number }) {

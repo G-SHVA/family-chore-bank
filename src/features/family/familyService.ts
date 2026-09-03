@@ -1,5 +1,6 @@
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import type { Family, FamilyMember } from '@/lib/supabase'
+import { isValidTimeZone } from '@/lib/time'
 
 /**
  * The family as the kiosk sees it. member_pins is deliberately absent: PIN
@@ -171,6 +172,23 @@ export async function fetchKioskContext(userId: string): Promise<KioskContext> {
     currentUserMemberId: me.id,
     pinStatus,
   }
+}
+
+/**
+ * Sets the family's IANA timezone.
+ *
+ * Validated against the runtime before it is written: this value drives every
+ * date boundary in the app AND is read by member_approved_day_counts() and
+ * process_loan_payments() server-side, where an unrecognised zone raises
+ * `invalid_value` mid-transaction. Rejecting it here keeps that failure out of
+ * the money path.
+ */
+export async function updateFamilyTimezone(familyId: string, timezone: string): Promise<void> {
+  if (!isValidTimeZone(timezone)) {
+    throw new Error(`"${timezone}" is not a timezone this device recognises.`)
+  }
+  const { error } = await supabase.from('families').update({ timezone }).eq('id', familyId)
+  if (error) throw error
 }
 
 /** Fresh active members for a family (e.g. to reflect balances after approvals). */

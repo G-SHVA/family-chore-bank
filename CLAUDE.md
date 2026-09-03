@@ -756,36 +756,137 @@ warn you it has gone stale.
   them as new and try to re-apply them. The two files added 2026-09-01 use the
   exact remote version as their prefix, which is the convention to follow.
 
-- families.timezone column reads 'UTC' but client and the daily dedup index
-  both use America/Chicago. Reconcile before multi-family launch — either
-  populate timezone from family settings or make the index timezone-aware
-  from the DB column.
-  Context: the client computes due_date from the BROWSER's local zone, and
-  idx_ca_daily_dedup buckets by a hardcoded 'America/Chicago' literal. Both
-  are correct for this one family and nothing reads families.timezone today,
-  so the mismatch is latent. It stops being latent the moment a second family
-  sits in another zone: their day boundary would be bucketed against Chicago's,
-  so a chore generated late evening local could land in the neighbouring
-  bucket and either duplicate or be wrongly suppressed.
-  ALL AFFECTED LOCATIONS — reconcile every one in a single pass:
-   1. idx_ca_daily_dedup — buckets due_date by a hardcoded 'America/Chicago'
-      literal.
-   2. member_approved_day_counts() — buckets approved_at into local days for
-      the streak, same hardcoded literal.
-   3. process_loan_payments() — reads the local day-of-month for the payment_day
-      comparison and the calendar-month start for the duplicate check, same
-      hardcoded literal. [added 2026-09-03]
-   4. The CLIENT computes date windows from the BROWSER's local zone. Measured
-      2026-09-03: a 14-day rejected-chore window returned 24 rows from the app
-      and 29 from a `current_date - interval '14 days'` query, because SQL
-      resolved midnight in UTC and the client in Chicago. Five rows sat in that
-      5-hour gap. Neither was wrong; they answered different questions. Any
-      verification query MUST match the client's zone before its result can be
-      compared to what a screen shows.
-  NOTE if making the index read the column: an index expression must be
-  IMMUTABLE, and a subquery against families is not. That route needs the
-  timezone denormalised onto chore_assignments (or a generated local-day
-  column) rather than a lookup inside the index.
+- TIMEZONE RECONCILIATION — RESOLVED 2026-09-03 (Option A: dynamic, read from
+  families.timezone). Left here rather than deleted because the failure mode it
+  describes is the reason the current design looks the way it does.
+  families.timezone was 'UTC' and read by nothing; it now holds
+  'America/Chicago' for this family and is the SINGLE SOURCE OF TRUTH for every
+  date boundary in the app. A family in California and a family in Texas both
+  get correct boundaries with no code change.
+  ALL FOUR AFFECTED LOCATIONS — three converted, one permanent exception:
+   1. idx_ca_daily_dedup — NOT CONVERTED. See "The one permanent hardcode"
+      below. This is deliberate and documented on the index itself.
+   2. member_approved_day_counts() — CONVERTED. Joins family_members ->
+      families for the zone. COALESCE to 'UTC' is a fail-safe, not the intent:
+      AT TIME ZONE NULL returns NULL, which would collapse every approved chore
+      into one NULL day row and silently zero a child's streak.
+   3. process_loan_payments() — CONVERTED, and the zone is resolved PER LOAN
+      inside the loop, not once per run. This function processes every family's
+      active loans in one pass, so a single zone computed up front would charge
+      a Pacific family on Central's calendar — near a month boundary that is a
+      payment taken in the wrong month, which the duplicate check would then
+      honour for the rest of that month. The loop's FOR UPDATE became
+      FOR UPDATE OF l so the joined families row is not locked, which would
+      otherwise block a parent saving a timezone in Settings.
+   4. The CLIENT — CONVERTED to src/lib/time.ts. Every setHours(0,0,0,0),
+      getDay() and new Date(y, m, d) in src/ is gone; a grep for them outside
+      lib/time.ts returns nothing, and that is the check to re-run after any
+      future date work.
+  The measurement that motivated it, kept for the lesson: on 2026-09-03 a
+  14-day rejected-chore window returned 24 rows from the app and 29 from a
+  `current_date - interval '14 days'` query, because SQL resolved midnight in
+  UTC and the client in Chicago. Five rows sat in the 5-hour gap. Neither was
+  wrong — they answered different questions. ANY verification query must still
+  match the family's zone before its result can be compared to a screen.
+
+### src/lib/time.ts — how the client reads the zone
+
+NO DATE LIBRARY. date-fns-tz would have been ~20 kB gzipped on a bundle already
+over the Vite warning threshold, for eight functions. Everything is built on
+Intl.DateTimeFormat with an explicit timeZone, which every browser this kiosk
+runs on supports. Formatters are cached per zone because construction dominates
+their cost and the streak paths call one per approved row.
+
+THE MODULE-LEVEL ACTIVE ZONE is the part to understand before changing
+anything. Service files are plain functions and cannot read React context, so
+lib/time holds the zone in module state and AuthProvider calls
+setActiveTimeZone(family.timezone) inside loadContext — BEFORE any state that
+renders a screen, because services read the zone at call time and the first
+query fires as soon as a screen mounts. Every helper still accepts an explicit
+tz, so a caller or a test can override it. One family per kiosk session is what
+makes module state the honest shape here; if the app ever serves two families
+at once, this is the thing that has to change first.
+
+The default before the family loads is the BROWSER's zone, not UTC. That is
+deliberate: it is exactly what the app did before this change, so boot is
+unchanged and a failed family fetch degrades to the old behaviour rather than
+to a zone nobody lives in.
+
+Components read useFamilyTimezone() (or timezone / saveTimezone off useAuth).
+DO NOT name a timezone literally anywhere in src/ — the one legal literal in
+the whole codebase is the US_TIMEZONES picker list.
+
+DISPLAY MUST MATCH THE BOUNDARY. formatDateInZone / formatTimeInZone exist
+because a boundary computed in the family's zone and printed with a bare
+toLocaleDateString() renders in the TABLET's zone. Same instant, wrong day
+name: a kiosk west of the family would title Family Week "Sun 31 – Sat 6" over
+Monday-to-Sunday figures. Every date the app prints now goes through these.
+
+STREAK DAYS ARE 'YYYY-MM-DD' STRINGS, not timestamps — Set<string>, not
+Set<number>. This fixed a REAL LATENT BUG found during the conversion:
+computeLongestStreak compared adjacency with days[i] - days[i-1] === DAY, i.e.
+exactly 86,400,000 ms. A civil day is 23 or 25 hours across a DST transition,
+so every streak spanning the March or November change was silently cut short.
+addDays exists for the same reason and must be used instead of
+`+ n * 86_400_000` anywhere a calendar day is meant. Verified with 31
+assertions covering spring-forward (a 23h day), fall-back (25h), Arizona (no
+DST), cross-zone day boundaries, and Monday week starts in all seven offered
+zones.
+
+member_approved_day_counts() returns 'YYYY-MM-DD' and the client now KEEPS that
+string. It used to convert it back through new Date(y, m-1, d) — forcing a day
+the server had already bucketed in the family's zone through the browser's.
+Both sides speak civil days now, so no conversion happens at all.
+
+### The one permanent hardcode — idx_ca_daily_dedup
+
+The index keeps AT TIME ZONE 'America/Chicago'. It cannot be made dynamic: an
+index expression must be IMMUTABLE, and a subquery against families is not.
+Making it possible would mean denormalising the zone onto chore_assignments or
+adding a generated local-day column, and that complexity is not worth the
+benefit.
+
+WHY IT IS ACCEPTABLE: the dedup index boundary shifts by at most one hour at
+DST transitions and by the timezone offset for non-Central families. This
+affects WHEN the daily dedup window resets, not WHETHER deduplication works.
+Idempotency is preserved regardless of timezone offset — the expression is
+still one fixed 24-hour bucket per (template_id, assigned_to), so two instances
+of the same template for the same child on the same local day still collide at
+any offset.
+
+DO NOT attempt to replace it with a trigger or a computed column. The exception
+is recorded three places so it cannot be mistaken for an oversight: this file,
+the index's own migration file, and a COMMENT ON INDEX in the database.
+
+### Family timezone in Settings
+
+Parent Settings has a "Family timezone" section: a seven-entry dropdown
+(Eastern, Central, Mountain, Arizona (no DST), Pacific, Alaska, Hawaii), the
+stored value pre-selected, Save shown only once the selection differs. Saving
+writes families.timezone and re-points both halves of the source of truth — the
+module zone services read, and the React state screens re-render from — so date
+calculations update immediately with no reload.
+
+US only, deliberately: the full IANA list is ~600 entries and a scrolling wall
+on a tablet, and the V1 market is US families. Nothing downstream cares — every
+consumer takes an arbitrary IANA string — so a family whose stored zone is not
+in the list still works, and the picker adds that value rather than silently
+re-selecting a neighbour. Arizona is listed separately because it does not
+observe DST, the one case where "Mountain" is wrong half the year.
+
+updateFamilyTimezone() validates against Intl before writing. An unrecognised
+zone raises invalid_value inside process_loan_payments() mid-transaction, so
+rejecting it at the door keeps that failure out of the money path.
+
+### Onboarding — auto-detect (SIGNUP SPEC NOTE)
+
+There is no signup flow yet. When one is built it MUST populate
+families.timezone at family creation from
+Intl.DateTimeFormat().resolvedOptions().timeZone — exported as
+detectBrowserTimeZone() in lib/time and already used as the pre-load default.
+Parents can change it in Settings afterwards; the detection is just a sensible
+default so no family is silently created in the wrong zone. For families that
+already exist, the Settings selector is the mechanism.
 
 ## NEXT FEATURE — Available chores to claim
 
@@ -949,7 +1050,8 @@ This is housekeeping, not a space fix — see the footprint numbers above.
 ## Migration audit — 2026-09-01
 
 Compared `supabase/migrations/` against the live project's applied migration
-history. 17 migrations are applied remotely; the repo captures 7.
+history. As of 2026-09-03 20 migrations are applied remotely; the repo captures
+10. (Was 17 / 7 when this audit was written on 2026-09-01.)
 
 CAPTURED IN THE REPO (7):
 - 20260828212105 pin_server_side_verification_additive
@@ -959,6 +1061,9 @@ CAPTURED IN THE REPO (7):
 - 20260831133207 member_earnings_and_approved_day_aggregates
 - 20260901213153 add_child_savings_goals_to_milestones      (backfilled)
 - 20260901213410 approve_chore_exclude_child_initiated_goals (backfilled)
+- 20260903180404 create_loans_table
+- 20260903180429 create_process_loan_payments
+- 20260903201021 timezone_reconciliation_dynamic_family_timezone
 
 LIVE BUT NOT IN THE REPO (10) — all predate 2026-09-01:
 - 20260808214850 add_member_pins_to_families

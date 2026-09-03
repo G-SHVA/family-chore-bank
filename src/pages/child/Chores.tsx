@@ -15,6 +15,7 @@ import {
 import { ChoreCard } from '@/components/shared/ChoreCard'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
+import { endOfDay, endOfWeek, startOfDay } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
 type Filter = 'today' | 'week' | 'all' | 'completed'
@@ -25,18 +26,6 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'completed', label: 'Completed' },
 ]
 
-function startOfDay(d: Date) {
-  const x = new Date(d)
-  x.setHours(0, 0, 0, 0)
-  return x
-}
-function endOfWeek(d: Date) {
-  const x = startOfDay(d)
-  const dow = (x.getDay() + 6) % 7
-  x.setDate(x.getDate() - dow + 6)
-  x.setHours(23, 59, 59, 999)
-  return x
-}
 
 /**
  * The Chores tab — where every chore lives, including the ones Home no longer
@@ -109,9 +98,12 @@ export default function ChildChores() {
     )
   }
 
+  // "Today" and "this week" are the FAMILY's days, not the tablet's. A chore
+  // whose due date the generator set to 23:59:59 local must fall inside the
+  // Today filter, and endOfDay is the same boundary the generator used.
   const now = new Date()
   const todayStart = startOfDay(now).getTime()
-  const todayEnd = todayStart + 24 * 60 * 60 * 1000 - 1
+  const todayEnd = endOfDay(now).getTime()
   const weekEnd = endOfWeek(now).getTime()
 
   const inFilterWindow = (i: AssignmentWithChore) => {

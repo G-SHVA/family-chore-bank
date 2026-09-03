@@ -14,6 +14,7 @@ import { EmptyState } from '@/components/shared/EmptyState'
 import { MonthlySummaryCard } from '@/components/shared/MonthlySummaryCard'
 import { getActiveGoal } from '@/features/goals/goalService'
 import { cn, formatCurrency } from '@/lib/utils'
+import { formatDateInZone } from '@/lib/time'
 
 export default function ChildBank() {
   const { memberId } = useParams()
@@ -106,7 +107,7 @@ export default function ChildBank() {
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium text-text">{t.description}</div>
                 <div className="label-caps text-[10px] text-text-muted">
-                  {new Date(t.date).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                  {formatDateInZone(new Date(t.date), { month: 'short', day: 'numeric' })}
                 </div>
               </div>
               <div className="text-right">

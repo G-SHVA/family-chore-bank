@@ -6,6 +6,7 @@ import { isParent } from '@/features/family/familyService'
 import type { FamilyMember } from '@/lib/supabase'
 import { PinPad } from '@/components/ui/PinPad'
 import { cn, initials } from '@/lib/utils'
+import { formatDateInZone, formatTimeInZone } from '@/lib/time'
 
 export default function KioskSelect() {
   const navigate = useNavigate()
@@ -81,10 +82,10 @@ export default function KioskSelect() {
         </div>
         <div className="text-right">
           <div className="display text-3xl tabular-nums text-text">
-            {now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            {formatTimeInZone(now, { hour: 'numeric', minute: '2-digit' })}
           </div>
           <div className="label-caps text-[11px] text-text-muted">
-            {now.toLocaleDateString([], {
+            {formatDateInZone(now, {
               weekday: 'long',
               month: 'long',
               day: 'numeric',

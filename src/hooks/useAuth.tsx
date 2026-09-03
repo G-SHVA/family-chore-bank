@@ -11,9 +11,11 @@ import {
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import type { FamilyMember } from '@/lib/supabase'
+import { detectBrowserTimeZone, setActiveTimeZone } from '@/lib/time'
 import {
   fetchKioskContext,
   fetchPinStatus,
+  updateFamilyTimezone,
   verifyMemberPin,
   createMemberPin,
   removeMemberPin,
@@ -29,6 +31,18 @@ interface AuthContextValue {
   needsLogin: boolean
   session: Session | null
   family: KioskFamily | null
+  /**
+   * The family's IANA timezone — the single source of truth for every date
+   * boundary in the app. Falls back to the browser's zone until the family
+   * record has loaded, and if the stored value is missing.
+   *
+   * Read it in components via `useFamilyTimezone()`. Service files, which
+   * cannot use hooks, read the same value through `lib/time`'s module-level
+   * active zone, which is kept in step with this one below.
+   */
+  timezone: string
+  /** Persists a new family timezone and re-points every date calculation. */
+  saveTimezone: (tz: string) => Promise<void>
   /** Selectable family members (excludes the kiosk operator account). */
   members: FamilyMember[]
   /**
@@ -72,6 +86,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loadContext = useCallback(async (userId: string) => {
     const ctx = await fetchKioskContext(userId)
+    // BEFORE any state that renders a screen: service files read the zone from
+    // lib/time at call time, and the first data load fires as soon as a screen
+    // mounts. Setting it here means no query is ever bounded by the wrong day.
+    setActiveTimeZone(ctx.family.timezone)
     setFamily(ctx.family)
     setAllMembers(ctx.members)
     setOperatorMemberId(ctx.currentUserMemberId)
@@ -189,6 +207,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return resetErr?.message ?? null
   }, [])
 
+  // `family.timezone` is the stored value; the browser's zone stands in until
+  // it loads, so a screen rendered mid-boot uses the same rule lib/time does.
+  const timezone = family?.timezone || detectBrowserTimeZone()
+
+  const saveTimezone = useCallback(
+    async (tz: string) => {
+      if (!family) throw new Error('Family not loaded.')
+      await updateFamilyTimezone(family.id, tz)
+      // Both halves, in this order: the module zone is what services read, and
+      // the state update is what re-renders the screens that then re-query.
+      setActiveTimeZone(tz)
+      setFamily((prev) => (prev ? { ...prev, timezone: tz } : prev))
+    },
+    [family]
+  )
+
   const refresh = useCallback(async () => {
     if (session?.user) await loadContext(session.user.id)
     else setPinStatus(await fetchPinStatus())
@@ -200,6 +234,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     needsLogin,
     session,
     family,
+    timezone,
+    saveTimezone,
     members,
     operatorMemberId,
     activeMember,
@@ -221,4 +257,15 @@ export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used within <AuthProvider>')
   return ctx
+}
+
+/**
+ * The family's timezone, for components that only need the zone.
+ *
+ * The single source of truth for date boundaries in the UI layer. Nothing in
+ * this app should name a zone literally — a family in California and a family
+ * in Texas must both be right with no code change.
+ */
+export function useFamilyTimezone(): string {
+  return useAuth().timezone
 }

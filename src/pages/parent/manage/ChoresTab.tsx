@@ -44,6 +44,7 @@ import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { cn, formatCurrency } from '@/lib/utils'
+import { formatDateInZone } from '@/lib/time'
 
 const WEEKLY_MULTIPLIER: Record<string, number> = { daily: 7, weekly: 1, monthly: 0.25, once: 0 }
 
@@ -226,7 +227,7 @@ export default function ChoresTab() {
                     <div className="truncate text-sm font-semibold">{m.chore?.title}</div>
                     <div className="text-xs text-text-muted">
                       {m.member?.display_name} ·{' '}
-                      {m.due_date ? new Date(m.due_date).toLocaleDateString() : 'no due date'}
+                      {m.due_date ? formatDateInZone(new Date(m.due_date), {}) : 'no due date'}
                     </div>
                   </div>
                   <span className="shrink-0 rounded-input border border-line px-3 py-1 label-caps text-[10px] text-text-muted">

@@ -4,6 +4,18 @@ import type { TablesInsert } from '@/types/database.types'
 // The Half Credit penalty leg. expenseService imports nothing from here, so
 // this edge introduces no cycle.
 import { directChargeCustom, REMINDER_PENALTY_CATEGORY } from '@/features/expenses/expenseService'
+import {
+  addDays,
+  dayKey,
+  dayKeyWeekday,
+  endOfDay,
+  endOfMonth,
+  endOfWeek,
+  shiftDayKey,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from '@/lib/time'
 
 export type Frequency = 'once' | 'daily' | 'weekly' | 'monthly'
 
@@ -13,36 +25,13 @@ export interface AssignmentWithChore extends ChoreAssignment {
 }
 
 /* ------------------------------------------------------------------ *
- * Date/period helpers (local time). Weeks are Monday–Sunday.
+ * Date/period helpers. Weeks are Monday–Sunday.
+ *
+ * These used to be local `setHours`/`setDate` helpers defined here. They now
+ * come from lib/time and resolve in the FAMILY's timezone, so a chore's due
+ * date and the dedup bucket the database puts it in agree for a family in any
+ * zone — not only one sitting in Central. See lib/time for the mechanism.
  * ------------------------------------------------------------------ */
-function startOfDay(d: Date) {
-  const x = new Date(d)
-  x.setHours(0, 0, 0, 0)
-  return x
-}
-function endOfDay(d: Date) {
-  const x = new Date(d)
-  x.setHours(23, 59, 59, 999)
-  return x
-}
-function startOfWeek(d: Date) {
-  const x = startOfDay(d)
-  const dow = (x.getDay() + 6) % 7 // 0 = Monday
-  x.setDate(x.getDate() - dow)
-  return x
-}
-function endOfWeek(d: Date) {
-  const s = startOfWeek(d)
-  const e = new Date(s)
-  e.setDate(s.getDate() + 6)
-  return endOfDay(e)
-}
-function startOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0)
-}
-function endOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999)
-}
 
 /** The period window *containing* `ref` for a recurring frequency. */
 function periodWindow(freq: Frequency, ref: Date): { start: Date; end: Date } {
@@ -81,8 +70,9 @@ export function dayLabel(dow: number | null | undefined): string | null {
  */
 function weeklyDueDate(dow: number, now: Date): Date | null {
   const weekStart = startOfWeek(now) // Monday
-  const target = new Date(weekStart)
-  target.setDate(weekStart.getDate() + ((dow + 6) % 7)) // Monday = 0 … Sunday = 6
+  // addDays steps CIVIL days, so a week containing a DST change still lands on
+  // the right weekday rather than an hour either side of its midnight.
+  const target = addDays(weekStart, (dow + 6) % 7) // Monday = 0 … Sunday = 6
   const due = endOfDay(target)
   return due < now ? null : due
 }
@@ -438,8 +428,7 @@ export async function getRejectedSince(
   memberId: string,
   days: number = REJECTED_WINDOW_DAYS
 ): Promise<AssignmentWithChore[]> {
-  const since = startOfDay(new Date())
-  since.setDate(since.getDate() - days)
+  const since = addDays(startOfDay(new Date()), -days)
   const { data, error } = await supabase
     .from('chore_assignments')
     .select('*, chore:chores(*)')
@@ -558,7 +547,8 @@ export async function getEarningsSummary(
  * the former, the activity chart the latter.
  */
 interface ApprovedDay {
-  dayMs: number
+  /** 'YYYY-MM-DD' in the FAMILY's timezone, as bucketed by the RPC. */
+  day: string
   totalCount: number
   rosterCount: number
 }
@@ -568,17 +558,16 @@ async function getApprovedDayCounts(memberId: string): Promise<ApprovedDay[]> {
     p_member_id: memberId,
   })
   if (error) throw error
-  return (data ?? []).map((r) => {
-    // 'YYYY-MM-DD' must be split by hand: `new Date('2026-08-31')` parses as UTC
-    // midnight, which lands on the previous local day west of Greenwich and
-    // would shift every streak by one.
-    const [y, m, d] = r.day.split('-').map(Number)
-    return {
-      dayMs: new Date(y, m - 1, d).getTime(),
-      totalCount: Number(r.total_count ?? 0),
-      rosterCount: Number(r.roster_count ?? 0),
-    }
-  })
+  return (data ?? []).map((r) => ({
+    // Kept as the 'YYYY-MM-DD' string the RPC returns. It used to be converted
+    // to a local-midnight timestamp with `new Date(y, m-1, d)`, which forced a
+    // day the SERVER had already bucketed in the family's zone back through the
+    // BROWSER's zone — two different answers for a kiosk used while travelling.
+    // Both sides now speak civil days, so no conversion is needed at all.
+    day: r.day,
+    totalCount: Number(r.total_count ?? 0),
+    rosterCount: Number(r.roster_count ?? 0),
+  }))
 }
 
 async function getLifetimeCounts(memberId: string): Promise<{ total: number; done: number }> {
@@ -703,8 +692,7 @@ export async function getChildDashboard(memberId: string): Promise<ChildDashboar
   // bounded by what it actually needs — status, or a date window — so a child's
   // growing history can never crowd their live chores out of the result. See
   // getActiveInstances() for the full account of the bug this replaces.
-  const streakSince = startOfDay(now)
-  streakSince.setDate(streakSince.getDate() - RECENT_WINDOW_DAYS)
+  const streakSince = addDays(startOfDay(now), -RECENT_WINDOW_DAYS)
 
   // Two reads, down from three. getHomeChores replaced getActiveInstances (it
   // drops 'rejected'), and the week-windowed read went with the completion rate.
@@ -759,28 +747,39 @@ function rosterInstancesOnly<T extends { template_id: string | null }>(rows: T[]
   return rows.filter((r) => r.template_id !== null)
 }
 
-export function computeStreakFromDays(approvedDays: Set<number>, now: Date): number {
+/**
+ * Days are 'YYYY-MM-DD' keys in the family's timezone, not timestamps.
+ *
+ * They used to be local-midnight `getTime()` values, walked backwards with
+ * `setDate(getDate() - 1)`. Two problems that fix together: the midnights were
+ * the BROWSER's, while member_approved_day_counts() bucketed the same rows in
+ * the family's zone; and computeLongestStreak below compared adjacency with
+ * `=== 86_400_000`, which is false across a DST change — a streak running
+ * through the March or November transition was silently cut short. A civil-day
+ * key has no offset and no variable-length day.
+ */
+export function computeStreakFromDays(approvedDays: Set<string>, now: Date): number {
   if (approvedDays.size === 0) return 0
 
   let streak = 0
-  const cursor = startOfDay(now)
+  let cursor = dayKey(now)
   // Allow the streak to "end" today or yesterday.
-  if (!approvedDays.has(cursor.getTime())) {
-    cursor.setDate(cursor.getDate() - 1)
-    if (!approvedDays.has(cursor.getTime())) return 0
+  if (!approvedDays.has(cursor)) {
+    cursor = shiftDayKey(cursor, -1)
+    if (!approvedDays.has(cursor)) return 0
   }
-  while (approvedDays.has(cursor.getTime())) {
+  while (approvedDays.has(cursor)) {
     streak++
-    cursor.setDate(cursor.getDate() - 1)
+    cursor = shiftDayKey(cursor, -1)
   }
   return streak
 }
 
 export function computeStreak(instances: AssignmentWithChore[], now: Date): number {
-  const approvedDays = new Set<number>()
+  const approvedDays = new Set<string>()
   for (const i of instances) {
     if (i.status === 'approved' && i.approved_at) {
-      approvedDays.add(startOfDay(new Date(i.approved_at)).getTime())
+      approvedDays.add(dayKey(new Date(i.approved_at)))
     }
   }
   return computeStreakFromDays(approvedDays, now)
@@ -1268,7 +1267,9 @@ export interface AchievementsOverview {
 
 export async function getAchievementsOverview(memberId: string): Promise<AchievementsOverview> {
   const now = new Date()
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  // Must match the month boundary member_earnings_summary() uses server-side,
+  // which now reads the family's timezone from families.
+  const monthStart = startOfMonth(now)
 
   // Every figure here is now computed server-side. Money is summed in Postgres
   // and activity is returned pre-grouped by day, so nothing on this screen is
@@ -1291,18 +1292,20 @@ export async function getAchievementsOverview(memberId: string): Promise<Achieve
   // Streaks: roster days only. totalEarned / monthEarned above intentionally
   // still include Direct Awards, because an award is real money the child
   // earned — it just is not a chore, so it cannot extend a streak.
-  const rosterDays = new Set(days.filter((d) => d.rosterCount > 0).map((d) => d.dayMs))
+  const rosterDays = new Set(days.filter((d) => d.rosterCount > 0).map((d) => d.day))
   const currentStreak = computeStreakFromDays(rosterDays, now)
   const longestStreak = computeLongestStreak(rosterDays)
 
-  // Last 7 days (oldest -> newest) count of approved chores per day.
+  // Last 7 days (oldest -> newest) count of approved chores per day. The cursor
+  // walks civil days in the family's zone, which is the same bucketing the RPC
+  // used, so a key either matches or the day genuinely had no approvals.
   const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  const countByDay = new Map(days.map((d) => [d.dayMs, d.totalCount]))
+  const countByDay = new Map(days.map((d) => [d.day, d.totalCount]))
+  const today = dayKey(now)
   const sevenDay: { label: string; count: number }[] = []
   for (let d = 6; d >= 0; d--) {
-    const day = startOfDay(now)
-    day.setDate(day.getDate() - d)
-    sevenDay.push({ label: dayLabels[day.getDay()], count: countByDay.get(day.getTime()) ?? 0 })
+    const key = shiftDayKey(today, -d)
+    sevenDay.push({ label: dayLabels[dayKeyWeekday(key)], count: countByDay.get(key) ?? 0 })
   }
 
   return {
@@ -1315,14 +1318,17 @@ export async function getAchievementsOverview(memberId: string): Promise<Achieve
     sevenDay,
   }
 }
-export function computeLongestStreak(approvedDays: Set<number>): number {
+export function computeLongestStreak(approvedDays: Set<string>): number {
   if (approvedDays.size === 0) return 0
-  const days = [...approvedDays].sort((a, b) => a - b)
-  const DAY = 24 * 60 * 60 * 1000
+  // 'YYYY-MM-DD' sorts lexicographically into chronological order, and
+  // adjacency is now "the next civil day" rather than "exactly 86,400,000 ms
+  // later" — the comparison that used to break every streak spanning a DST
+  // transition, when a local day is 23 or 25 hours long.
+  const days = [...approvedDays].sort()
   let longest = 1
   let run = 1
   for (let i = 1; i < days.length; i++) {
-    if (days[i] - days[i - 1] === DAY) run++
+    if (days[i] === shiftDayKey(days[i - 1], 1)) run++
     else run = 1
     if (run > longest) longest = run
   }
@@ -1547,8 +1553,9 @@ export interface MissedInstance extends AssignmentWithChore {
 
 /** Expired (missed) instances across the family, most recent first. */
 export async function getMissedInstances(sinceDays = 14): Promise<MissedInstance[]> {
-  const since = new Date()
-  since.setDate(since.getDate() - sinceDays)
+  // addDays steps CIVIL days in the family's zone; `setDate` on a raw Date
+  // steps them in the browser's and drifts an hour at each DST change.
+  const since = addDays(new Date(), -sinceDays)
   const { data, error } = await supabase
     .from('chore_assignments')
     .select(
@@ -1597,8 +1604,7 @@ export interface CleanupResult {
  * scale answer is on-demand generation, not deleting rows after the fact.
  */
 export async function deleteExpiredAssignments(olderThanDays = 30): Promise<CleanupResult> {
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - olderThanDays)
+  const cutoff = addDays(new Date(), -olderThanDays)
   const cutoffIso = cutoff.toISOString()
 
   const { data, error } = await supabase

@@ -19,6 +19,7 @@ import { Modal } from '@/components/ui/Modal'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { cn, formatCurrency } from '@/lib/utils'
+import { formatDateInZone } from '@/lib/time'
 
 /**
  * Manage -> Loans. A parent's complete control over a child's debt.
@@ -286,7 +287,7 @@ function ResolvedLoanRow({ loan, currency }: { loan: LoanWithMember; currency: s
           </div>
           <div className="label-caps text-[10px] text-text-muted">
             {loan.paid_off_at
-              ? new Date(loan.paid_off_at).toLocaleDateString([], {
+              ? formatDateInZone(new Date(loan.paid_off_at), {
                   month: 'short',
                   day: 'numeric',
                   year: 'numeric',

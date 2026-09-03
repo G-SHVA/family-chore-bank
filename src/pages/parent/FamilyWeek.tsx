@@ -248,6 +248,7 @@ export default function FamilyWeek() {
 /** How many idle chores to actually list. See the note at the call site. */
 const IDLE_PREVIEW = 8
 
+import { formatDateInZone } from '@/lib/time'
 const CONVERSATION_STARTERS = [
   'What was your biggest earning win this week?',
   'Is there anything you want to save for next week?',
@@ -255,8 +256,10 @@ const CONVERSATION_STARTERS = [
   'Is there anything we should change about how the system works?',
 ] as const
 
+// The week header labels boundaries computed in the family's zone, so it
+// must render them in that zone too — see formatDateInZone.
 function formatDay(d: Date): string {
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  return formatDateInZone(d, { month: 'short', day: 'numeric' })
 }
 
 function Stat({

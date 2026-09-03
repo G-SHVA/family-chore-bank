@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { cn, formatCurrency } from '@/lib/utils'
+import { formatDateInZone } from '@/lib/time'
 
 // milestoneId -> childId -> { current, pct }
 type ProgressMap = Record<string, Record<string, { current: number; pct: number }>>
@@ -144,7 +145,7 @@ export default function MilestonesTab() {
  *  column is nullable and a missing one must not crash the tab. */
 function formatDate(iso: string | null): string {
   if (!iso) return ''
-  return new Date(iso).toLocaleDateString(undefined, {
+  return formatDateInZone(new Date(iso), {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

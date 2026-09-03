@@ -16,6 +16,7 @@ import {
   type DateRange,
 } from '@/features/analytics/analyticsService'
 import { getFamilyGoals, withGoalProgress } from '@/features/goals/goalService'
+import { endOfWeek } from '@/lib/time'
 
 /**
  * The Friday-night family meeting screen.
@@ -35,15 +36,14 @@ import { getFamilyGoals, withGoalProgress } from '@/features/goals/goalService'
  * more chances to reintroduce the truncation bug CLAUDE.md documents. Reuse is
  * the safety property, not just tidiness.
  *
- * TIMEZONE. Week boundaries come from the BROWSER's local zone, exactly as
- * every other week in the app does (choreService.startOfWeek, analyticsService
- * .startOfWeek). The spec asked for America/Chicago specifically, and this
- * family IS in Chicago, so the two agree today. They are deliberately NOT
- * hardcoded here: if this screen pinned Chicago while getFamilyChildSummaries
- * stayed local, the same child's "earned this week" could differ between the
- * parent dashboard and the meeting screen for a family in another zone — a
- * worse failure than the latent one CLAUDE.md already tracks under
- * families.timezone. Reconcile all of them together, or none.
+ * TIMEZONE — RECONCILED 2026-09-03. Week boundaries come from the FAMILY's
+ * timezone via lib/time, exactly as every other week in the app now does
+ * (choreService.startOfWeek, analyticsService.startOfWeek). The earlier note
+ * here argued that this screen must not pin a zone of its own while the rest of
+ * the app stayed on the browser's, because the same child's "earned this week"
+ * would then differ between the parent dashboard and the meeting screen. That
+ * still holds — which is why all of them moved together rather than this one
+ * alone. Reconcile all of them, or none.
  */
 
 /** Monday 00:00 through Sunday 23:59:59 of the week containing `now`. */
@@ -52,10 +52,7 @@ export function resolveMeetingWeek(now: Date = new Date()): DateRange {
   // the whole week in its header, so the end is pushed out to Sunday. Nothing
   // can be approved in the future, so this changes the header, not the figures.
   const base = resolveRange('week', now)
-  const end = new Date(base.start as Date)
-  end.setDate(end.getDate() + 6)
-  end.setHours(23, 59, 59, 999)
-  return { ...base, end }
+  return { ...base, end: endOfWeek(base.start as Date) }
 }
 
 export interface ChildWeek {

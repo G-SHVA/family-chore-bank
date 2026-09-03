@@ -1,5 +1,8 @@
 import { supabase } from '@/lib/supabase'
 import { getEarningsSummary } from '@/features/chores/choreService'
+// The month boundary must match the one member_earnings_summary() uses
+// server-side; both now resolve in the family's timezone.
+import { startOfMonth } from '@/lib/time'
 
 export interface Transaction {
   id: string
@@ -15,10 +18,6 @@ export interface MonthlySummary {
   spent: number
   /** earned - spent. Negative when the child outspent what they brought in. */
   net: number
-}
-
-function startOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1)
 }
 
 /**

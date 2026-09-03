@@ -13,6 +13,7 @@ import type { FamilyMember } from '@/lib/supabase'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
+import { US_TIMEZONES, formatTimeInZone, zoneLabel } from '@/lib/time'
 import { cn, formatCurrency, initials } from '@/lib/utils'
 
 export default function Settings() {
@@ -126,6 +127,8 @@ export default function Settings() {
         </div>
       </section>
 
+      <TimezoneSection />
+
       {(adding || editing) && (
         <MemberFormModal
           member={editing}
@@ -143,6 +146,96 @@ export default function Settings() {
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Family timezone.
+ *
+ * This is the single value every date boundary in the app resolves against —
+ * chore due dates, week and month windows, streak days, and the monthly loan
+ * payment date, on both the client and in Postgres. Changing it changes what
+ * "today" and "this week" mean, so the copy says so plainly rather than
+ * presenting it as a display preference.
+ *
+ * Save is shown only once the selection differs from what is stored: a control
+ * that does nothing is worse than no control on a screen a parent visits to
+ * change one thing.
+ */
+function TimezoneSection() {
+  const { timezone, saveTimezone } = useAuth()
+  const [choice, setChoice] = useState(timezone)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Re-sync if the stored value changes underneath (another tablet, a reload).
+  useEffect(() => setChoice(timezone), [timezone])
+
+  const dirty = choice !== timezone
+  // A stored zone outside the seven offered (international, or auto-detected at
+  // signup) is added to the list rather than silently replaced by a neighbour.
+  const options = US_TIMEZONES.some((z) => z.value === timezone)
+    ? US_TIMEZONES
+    : [...US_TIMEZONES, { value: timezone, label: zoneLabel(timezone) }]
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      await saveTimezone(choice)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the timezone.')
+      setChoice(timezone)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="mb-3 text-2xl">Family timezone</h2>
+      <Card className="flex flex-col gap-3">
+        <label className="label-caps text-[11px] text-text-muted" htmlFor="family-timezone">
+          Family timezone
+        </label>
+        <select
+          id="family-timezone"
+          value={choice}
+          onChange={(e) => setChoice(e.target.value)}
+          className="min-h-touch rounded-input border border-line bg-bg px-4 text-base text-text focus:border-antique focus:outline-none"
+        >
+          {options.map((z) => (
+            <option key={z.value} value={z.value}>
+              {z.label}
+            </option>
+          ))}
+        </select>
+
+        <p className="flex items-start gap-2 text-sm text-text-muted">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          Sets when a day and a week begin for chores, streaks and loan payments.
+          {/* The clock previews the SELECTED zone, not the saved one, so a
+              parent can confirm the pick before committing to it. Showing the
+              saved zone here would leave the reading unchanged while the
+              dropdown said something else — the one moment the number is worth
+              printing is the moment it disagrees with what is stored. */}
+          {' '}
+          {dirty ? 'It would be' : 'It is currently'}{' '}
+          {formatTimeInZone(new Date(), { hour: 'numeric', minute: '2-digit' }, choice)} in{' '}
+          {zoneLabel(choice)}.
+        </p>
+
+        {error && <p className="text-sm text-danger">{error}</p>}
+
+        {dirty && (
+          <div className="flex justify-end">
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Save timezone'}
+            </Button>
+          </div>
+        )}
+      </Card>
+    </section>
   )
 }
 

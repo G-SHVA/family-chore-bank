@@ -5,6 +5,15 @@ import {
   computeLongestStreak,
   type AssignmentWithChore,
 } from '@/features/chores/choreService'
+import {
+  addDays,
+  dayKey,
+  endOfDay,
+  getZonedParts,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from '@/lib/time'
 
 /* ------------------------------------------------------------------ *
  * Date ranges. Weeks are Monday–Sunday, matching choreService.
@@ -29,25 +38,13 @@ export interface DateRange {
   priorStart: Date | null
 }
 
-function startOfDay(d: Date) {
-  const x = new Date(d)
-  x.setHours(0, 0, 0, 0)
-  return x
-}
-function endOfDay(d: Date) {
-  const x = new Date(d)
-  x.setHours(23, 59, 59, 999)
-  return x
-}
-function startOfWeek(d: Date) {
-  const x = startOfDay(d)
-  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)) // Monday = 0
-  return x
-}
+// Boundaries resolve in the FAMILY's timezone (see lib/time), not the
+// browser's. Analytics compares its client-side windows against approved_at
+// values the database buckets in that same zone, so the two must agree — a
+// 14-day window measured 2026-09-03 returned 24 rows from the app and 29 from
+// a naive SQL query for exactly this reason.
 function daysAgo(d: Date, n: number) {
-  const x = startOfDay(d)
-  x.setDate(x.getDate() - n)
-  return x
+  return addDays(startOfDay(d), -n)
 }
 
 export function resolveRange(key: RangeKey, now: Date = new Date()): DateRange {
@@ -56,7 +53,7 @@ export function resolveRange(key: RangeKey, now: Date = new Date()): DateRange {
     key === 'week'
       ? startOfWeek(now)
       : key === 'month'
-        ? new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0)
+        ? startOfMonth(now)
         : key === 'last30'
           ? daysAgo(now, 29)
           : key === 'last90'
@@ -368,9 +365,9 @@ export function buildCompletion(
     )
     // computeStreak/computeLongestStreak are choreService's, used unchanged.
     const asInstances = mine as unknown as AssignmentWithChore[]
-    const days = new Set<number>()
+    const days = new Set<string>()
     for (const r of mine) {
-      if (r.approved_at) days.add(startOfDay(new Date(r.approved_at)).getTime())
+      if (r.approved_at) days.add(dayKey(new Date(r.approved_at)))
     }
     return {
       childId: c.id,
@@ -489,20 +486,15 @@ export function buildFinancial(
       ? startOfWeek(new Date(firstEarned))
       : startOfWeek(range.end)
 
+  // Each bucket is one CIVIL week in the family's zone. Stepping by
+  // `+ 7 * 86_400_000` would drift an hour at each DST change and slowly walk
+  // the bucket edges off Monday midnight; addDays re-resolves the wall clock
+  // every time, so every bucket starts exactly at a Monday 00:00 local.
   const buckets: { start: number; end: number; label: string }[] = []
-  for (
-    let cursor = new Date(trendStart);
-    cursor.getTime() <= range.end.getTime();
-    cursor.setDate(cursor.getDate() + 7)
-  ) {
-    const s = new Date(cursor)
-    const e = new Date(cursor)
-    e.setDate(e.getDate() + 7)
-    buckets.push({
-      start: s.getTime(),
-      end: e.getTime(),
-      label: `${s.getMonth() + 1}/${s.getDate()}`,
-    })
+  for (let s = trendStart; s.getTime() <= range.end.getTime(); s = addDays(s, 7)) {
+    const e = addDays(s, 7)
+    const p = getZonedParts(s)
+    buckets.push({ start: s.getTime(), end: e.getTime(), label: `${p.month}/${p.day}` })
   }
 
   const trend = buckets.map((b) => {
