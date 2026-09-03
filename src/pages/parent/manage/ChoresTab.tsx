@@ -18,6 +18,7 @@ import {
   getFamilyChores,
   getRoster,
   getMissedInstances,
+  getRequestedChoreNames,
   getChoreUsage,
   createChore,
   updateChore,
@@ -69,19 +70,24 @@ export default function ChoresTab() {
   const [assigning, setAssigning] = useState<Chore | null>(null)
   const [deleting, setDeleting] = useState<{ chore: Chore; usage: ChoreUsage } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  // chore_id -> the children currently asking for it. Gives Eve the signal
+  // while she is already in the library, without a trip to the approval queue.
+  const [requestedBy, setRequestedBy] = useState<Map<string, string[]>>(new Map())
 
   const load = useCallback(async () => {
     if (!familyId) return
     try {
       setError(null)
-      const [c, r, m] = await Promise.all([
+      const [c, r, m, req] = await Promise.all([
         getFamilyChores(familyId, true),
         getRoster(),
         getMissedInstances(14),
+        getRequestedChoreNames(),
       ])
       setChores(c)
       setRoster(r)
       setMissed(m)
+      setRequestedBy(req)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load chores.')
     } finally {
@@ -312,6 +318,16 @@ export default function ChoresTab() {
                       {c.is_archived && (
                         <span className="rounded-input border border-line px-1.5 py-0.5 label-caps text-[9px] text-text-muted">
                           Archived
+                        </span>
+                      )}
+                      {/* An outstanding claim request. Antique, not green:
+                          green on this tile already means "assigned", and a
+                          request is precisely the thing that is NOT assigned
+                          yet. Naming the child is the whole value — "someone
+                          wants this" is not actionable, "POCO wants this" is. */}
+                      {(requestedBy.get(c.id)?.length ?? 0) > 0 && (
+                        <span className="label-caps rounded-input border border-antique/40 bg-wash px-1.5 py-0.5 text-[9px] text-antique">
+                          Requested by {requestedBy.get(c.id)?.join(', ')}
                         </span>
                       )}
                     </div>

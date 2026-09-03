@@ -17,6 +17,11 @@ import {
   getFamilyChildSummaries,
   getRoster,
   dailyRosterTotal,
+  getChoreRequests,
+  approveChoreRequest,
+  declineChoreRequest,
+  type ChoreRequest,
+  type ChoreRequestQueue,
   type PendingApproval,
   type ChildSummary,
   type RosterEntry,
@@ -34,6 +39,7 @@ import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
+import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { cn, formatCurrency, initials, timeAgo } from '@/lib/utils'
 
 export default function ParentDashboard() {
@@ -54,6 +60,10 @@ export default function ParentDashboard() {
   const [goalsByChild, setGoalsByChild] = useState<Record<string, Milestone>>({})
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejecting, setRejecting] = useState<PendingApproval | null>(null)
+  // Claim requests, both paths. Empty for a family that never uses the claim
+  // library, and the section renders nothing at all in that case.
+  const [requests, setRequests] = useState<ChoreRequestQueue>({ oneTime: [], roster: [] })
+  const [decliningRequest, setDecliningRequest] = useState<ChoreRequest | null>(null)
   // Synchronous guard so a double-tap can't dispatch two approvals for one chore.
   const inFlight = useRef<Set<string>>(new Set())
 
@@ -66,7 +76,7 @@ export default function ParentDashboard() {
       await generateDailyAssignments()
       const members = await getActiveMembers(familyId)
       const children = members.filter(isChild)
-      const [pa, sums, ch, ex, recent, ros, goals] = await Promise.all([
+      const [pa, sums, ch, ex, recent, ros, goals, reqs] = await Promise.all([
         getPendingApprovals(),
         getFamilyChildSummaries(children),
         getFamilyChores(familyId),
@@ -76,8 +86,12 @@ export default function ParentDashboard() {
         // already worth before this assignment lands on it.
         getRoster(),
         getFamilyGoals(familyId),
+        // Both claim paths in one status-bounded read. 'requested' is
+        // transient by construction, so this cannot grow with history.
+        getChoreRequests(),
       ])
       setApprovals(pa)
+      setRequests(reqs)
       setSummaries(sums)
       setChores(ch)
       setExpenses(ex)
@@ -169,6 +183,44 @@ export default function ParentDashboard() {
     }
   }
 
+  /**
+   * Approve a claim request. isRoster picks the payload shape AND is checked
+   * against the stored row server-side, so a mismatch fails loudly rather than
+   * writing a template-shaped update onto an instance.
+   *
+   * No refresh() here, unlike the chore approvals above: approving a request
+   * moves no money, so no balance anywhere on this screen changes.
+   */
+  async function handleApproveRequest(r: ChoreRequest, isRoster: boolean) {
+    if (inFlight.current.has(r.id)) return
+    inFlight.current.add(r.id)
+    setBusyId(r.id)
+    try {
+      await approveChoreRequest(r.id, isRoster)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not approve that request.')
+    } finally {
+      inFlight.current.delete(r.id)
+      setBusyId(null)
+    }
+  }
+
+  async function handleDeclineRequest(note: string) {
+    if (!decliningRequest) return
+    const r = decliningRequest
+    setBusyId(r.id)
+    setDecliningRequest(null)
+    try {
+      await declineChoreRequest(r.id, note)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not decline that request.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center gap-3 py-24">
@@ -200,7 +252,12 @@ export default function ParentDashboard() {
         </Card>
         <Card>
           <div className="label-caps text-[11px] text-text-muted">Pending approvals</div>
-          <div className="display mt-2 text-4xl text-antique">{approvals.length}</div>
+          {/* Finished chores AND unanswered claim requests. Both are things a
+              parent has to act on, and a child waiting on a request is waiting
+              on this number just as much as one waiting on an approval. */}
+          <div className="display mt-2 text-4xl text-antique">
+            {approvals.length + requests.oneTime.length + requests.roster.length}
+          </div>
         </Card>
         <Card>
           <div className="label-caps text-[11px] text-text-muted">Expenses applied</div>
@@ -295,6 +352,14 @@ export default function ParentDashboard() {
               </AnimatePresence>
             </div>
           )}
+
+          <ChoreRequests
+            requests={requests}
+            currency={currency}
+            busyId={busyId}
+            onApprove={handleApproveRequest}
+            onDecline={setDecliningRequest}
+          />
         </section>
 
         {/* Right column: child cards + quick add */}
@@ -357,6 +422,12 @@ export default function ParentDashboard() {
         approval={rejecting}
         onClose={() => setRejecting(null)}
         onSubmit={handleReject}
+      />
+
+      <DeclineRequestModal
+        request={decliningRequest}
+        onClose={() => setDecliningRequest(null)}
+        onSubmit={handleDeclineRequest}
       />
     </div>
   )
@@ -1122,5 +1193,199 @@ function QuickAdd({
         {error && <p className="text-center text-sm text-danger">{error}</p>}
       </Card>
     </section>
+  )
+}
+
+/**
+ * The claim-request queue — Path 1 and Path 2 side by side.
+ *
+ * COLLAPSIBLE, AND ABSENT WHEN EMPTY. Same pattern as Loan History: a family
+ * that never uses the claim library never sees this section at all, so the
+ * dashboard's one job — what needs approval right now — is not diluted by a
+ * permanently empty container.
+ *
+ * The two paths are separated because they are different decisions, not two
+ * flavours of one. Approving a one-time request puts a chore on a child's list
+ * for today. Approving a roster request changes what that child is
+ * responsible for indefinitely. A parent skimming a tablet must not confuse
+ * the two, so they never share a list.
+ */
+function ChoreRequests({
+  requests,
+  currency,
+  busyId,
+  onApprove,
+  onDecline,
+}: {
+  requests: ChoreRequestQueue
+  currency: string
+  busyId: string | null
+  onApprove: (r: ChoreRequest, isRoster: boolean) => void
+  onDecline: (r: ChoreRequest) => void
+}) {
+  const total = requests.oneTime.length + requests.roster.length
+  if (total === 0) return null
+
+  return (
+    <div className="mt-6 shrink-0">
+      <CollapsibleSection title="Chore Requests" meta={`${total}`} maxHeight={380}>
+        <div className="flex flex-col gap-5">
+          {requests.oneTime.length > 0 && (
+            <div>
+              <h3 className="label-caps mb-2 text-[10px] text-text-muted">One-time requests</h3>
+              <div className="flex flex-col gap-2">
+                {requests.oneTime.map((r) => (
+                  <RequestRow
+                    key={r.id}
+                    request={r}
+                    currency={currency}
+                    busy={busyId === r.id}
+                    blurb="wants to do this today"
+                    approveLabel="Approve"
+                    onApprove={() => onApprove(r, false)}
+                    onDecline={() => onDecline(r)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {requests.roster.length > 0 && (
+            <div>
+              <h3 className="label-caps mb-2 text-[10px] text-text-muted">Roster requests</h3>
+              <div className="flex flex-col gap-2">
+                {requests.roster.map((r) => (
+                  <RequestRow
+                    key={r.id}
+                    request={r}
+                    currency={currency}
+                    busy={busyId === r.id}
+                    blurb="wants to add this to their regular chores"
+                    approveLabel="Add to Roster"
+                    showFrequency
+                    onApprove={() => onApprove(r, true)}
+                    onDecline={() => onDecline(r)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </CollapsibleSection>
+    </div>
+  )
+}
+
+function RequestRow({
+  request,
+  currency,
+  busy,
+  blurb,
+  approveLabel,
+  showFrequency,
+  onApprove,
+  onDecline,
+}: {
+  request: ChoreRequest
+  currency: string
+  busy: boolean
+  blurb: string
+  approveLabel: string
+  showFrequency?: boolean
+  onApprove: () => void
+  onDecline: () => void
+}) {
+  return (
+    <Card className="flex flex-col gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <Avatar member={request.member} />
+        <div className="min-w-0">
+          <div className="display text-lg text-text">{request.chore?.title}</div>
+          <div className="text-sm text-text-muted">
+            {request.member?.display_name} ·{' '}
+            <span className="font-semibold text-antique">
+              {formatCurrency(request.chore?.value ?? 0, currency)}
+            </span>
+            {showFrequency && request.chore?.frequency && (
+              <span className="label-caps ml-2 text-[10px]">{request.chore.frequency}</span>
+            )}
+          </div>
+          <div className="mt-0.5 text-sm text-text-muted">{blurb}</div>
+        </div>
+      </div>
+      {/* Two outcomes, each its own 64px target — no dropdown, same discipline
+          as the approvals queue above. Antique rather than primary gold: the
+          dominant action on this screen is approving finished work, not
+          answering a request. */}
+      <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2">
+        <Button size="lg" variant="accent" className="px-3" onClick={onApprove} disabled={busy}>
+          <Check className="h-5 w-5 shrink-0" /> {approveLabel}
+        </Button>
+        <Button size="lg" variant="danger" className="px-3" onClick={onDecline} disabled={busy}>
+          <X className="h-5 w-5 shrink-0" /> Decline
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * Declining a request requires a note, for the same reason rejecting a chore
+ * does: the note IS the message. There is no notifications table, so
+ * chore_assignments.notes is the only channel a parent has to tell a child why
+ * the answer was no — and a child who asked to do MORE work is owed one.
+ *
+ * Unlike RejectModal this arrives EMPTY. A rejected chore has a common default
+ * reason ("completed after multiple reminders"); a declined request does not,
+ * and a pre-filled excuse would be worse than none.
+ */
+function DeclineRequestModal({
+  request,
+  onClose,
+  onSubmit,
+}: {
+  request: ChoreRequest | null
+  onClose: () => void
+  onSubmit: (note: string) => void
+}) {
+  const [note, setNote] = useState('')
+  useEffect(() => {
+    if (request) setNote('')
+  }, [request])
+
+  const isRoster = !!request?.is_template
+
+  return (
+    <Modal open={!!request} onClose={onClose} title="Decline request">
+      <p className="mb-4 text-text-muted">
+        {request?.member?.display_name} asked to{' '}
+        {isRoster ? 'add' : 'do'} “{request?.chore?.title}”
+        {isRoster ? ' to their regular chores' : ' today'}.
+      </p>
+      <label htmlFor="decline-note" className="label-caps mb-2 block text-[11px] text-text-muted">
+        Reason (required)
+      </label>
+      <textarea
+        id="decline-note"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={3}
+        placeholder="Let them know why — maybe not this week, or pick a different one..."
+        className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
+      />
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={() => onSubmit(note.trim())} disabled={!note.trim()}>
+          Decline
+        </Button>
+      </div>
+      {!note.trim() && (
+        <p className="mt-2 text-right text-xs text-text-muted">
+          Add a reason so they know what happened.
+        </p>
+      )}
+    </Modal>
   )
 }

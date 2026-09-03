@@ -20,8 +20,26 @@ export function Modal({ open, onClose, children, title, hideClose, className }: 
         <motion.div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          animate={{ opacity: 1, pointerEvents: 'auto' }}
+          // pointerEvents IS the fix, and it belongs on THIS element rather
+          // than on the backdrop below it. AnimatePresence keeps this whole
+          // subtree mounted for the 150ms exit fade, and a bare `fixed inset-0
+          // z-50` div is a hit target whether or not it has an onClick — so
+          // for 150ms after every close, a full-screen invisible pane ate the
+          // first tap on whatever sat underneath. Disabling only the backdrop
+          // would not have helped; this element was the one swallowing.
+          //
+          // pointerEvents is not an animatable value, so framer-motion applies
+          // it the instant the exit begins rather than easing it — which is
+          // exactly the semantics needed. The whole subtree inherits it, so
+          // the dialog stops accepting clicks while it is leaving too.
+          //
+          // Measured on the claim screen 2026-09-03: three swallowed taps in
+          // one browse cycle before, zero after. That screen is why this got
+          // fixed rather than deferred — chore -> sheet -> submit -> next
+          // chore hits the dead window on EVERY iteration, and a child who
+          // taps and sees nothing concludes the app is broken.
+          exit={{ opacity: 0, pointerEvents: 'none' }}
           transition={{ duration: 0.15 }}
         >
           <div className="absolute inset-0 bg-deep/80 backdrop-blur-sm" onClick={onClose} />

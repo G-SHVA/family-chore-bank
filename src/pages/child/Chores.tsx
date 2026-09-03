@@ -7,6 +7,7 @@ import {
   getActiveInstances,
   getRecentApprovedInstances,
   getRejectedSince,
+  getDeclinedRosterRequestsSince,
   markChoreComplete,
   isActionable,
   isLapsed,
@@ -62,16 +63,22 @@ export default function ChildChores() {
     // the live rows out of the window (see getActiveInstances). Each read is
     // bounded by its own status filter, and the rejected one additionally by a
     // 14-day window.
-    const [active, approved, rejected] = await Promise.all([
+    const [active, approved, rejected, declinedRoster] = await Promise.all([
       getActiveInstances(memberId),
       getRecentApprovedInstances(memberId),
       getRejectedSince(memberId),
+      // Declined ROSTER requests. A fourth read because these are template
+      // rows with no due_date, so getRejectedSince — filtered on
+      // is_template = false and bounded by due_date — cannot see them.
+      // Without this the parent's note on a declined request would exist in
+      // the database and appear on no child screen anywhere.
+      getDeclinedRosterRequestsSince(memberId),
     ])
     // getActiveInstances still returns 'rejected' rows for other callers; the
     // date-bounded read is the one this screen shows, so drop the unbounded
     // duplicates rather than rendering a row twice.
     const live = active.filter((i) => i.status !== 'rejected')
-    setInstances([...live, ...approved, ...rejected])
+    setInstances([...live, ...approved, ...rejected, ...declinedRoster])
     setLoading(false)
   }, [memberId])
 
@@ -108,6 +115,12 @@ export default function ChildChores() {
 
   const inFilterWindow = (i: AssignmentWithChore) => {
     if (filter === 'all') return true
+    // A declined roster request is a TEMPLATE row: it has no due_date, because
+    // it was never scheduled work — it was a request to take something on.
+    // Date filters are meaningless for it, so it is always in window rather
+    // than being silently dropped by every filter except All. Its own read is
+    // already bounded to 14 days.
+    if (i.is_template) return true
     const due = i.due_date ? new Date(i.due_date).getTime() : null
     if (due === null) return false
     if (filter === 'today') return due >= todayStart && due <= todayEnd

@@ -207,6 +207,19 @@ async function runGeneration(now: Date): Promise<number> {
     .select('*, chore:chores(*)')
     .eq('is_template', true)
     .eq('is_active', true)
+    // Claim-library roster requests (Path 2) are is_template = true and would
+    // otherwise match both predicates above — so a child tapping "Add to my
+    // regulars" would start generating daily instances on the NEXT parent
+    // dashboard load, before the parent ever saw the request. The approval
+    // step would be decorative.
+    //
+    // Belt and braces, deliberately. Path 2 rows are ALSO inserted with
+    // is_active = false, which the filter above already excludes. Neither
+    // layer is redundant: this one is explicit and survives someone flipping
+    // is_active for an unrelated reason, and per CLAUDE.md every read of this
+    // table states its status filter rather than relying on another column to
+    // imply it. Approval flips status AND is_active in one update.
+    .neq('status', 'requested')
   if (error) throw error
   if (!templates || templates.length === 0) return 0
 
@@ -1480,6 +1493,12 @@ export async function getRoster(): Promise<RosterEntry[]> {
       '*, chore:chores(*), member:family_members!chore_assignments_assigned_to_fkey(id,display_name,avatar_url)'
     )
     .eq('is_template', true)
+    // Excludes unapproved Path 2 claim requests. Without this a child's
+    // request renders in Manage -> Chores as a live roster entry, with
+    // working pause and delete controls, before the parent has approved it.
+    // Roster requests belong in the dashboard's CHORE REQUESTS queue, which
+    // reads them explicitly.
+    .neq('status', 'requested')
     .order('created_at', { ascending: true })
   if (error) throw error
   return (data ?? []) as unknown as RosterEntry[]
@@ -1617,4 +1636,423 @@ export async function deleteExpiredAssignments(olderThanDays = 30): Promise<Clea
   if (error) throw error
 
   return { deleted: data?.length ?? 0, cutoff: cutoffIso }
+}
+
+/* ------------------------------------------------------------------ *
+ * Claim library — children self-select chores
+ *
+ * WHY THIS EXISTS. Eve had 85 active roster entries because the only way to
+ * make a chore AVAILABLE to a child was to assign it permanently. The kids
+ * kept asking for chores; every ask became a roster row. The result was a
+ * roster nobody could complete (19-28%) and a Home screen rendering 90 cards.
+ *
+ * The claim library separates "available" from "assigned". A small mandatory
+ * core roster stays parent-assigned; everything else the child browses and
+ * requests. Agency is the point — the book's own mechanic is children
+ * self-selecting what to work on.
+ *
+ * TWO PATHS, ONE STATUS. Both produce a chore_assignments row with
+ * status = 'requested'; is_template is what tells them apart:
+ *
+ *   Path 1  "Do this today"          is_template = false, template_id = NULL
+ *   Path 2  "Add to my regulars"     is_template = true,  is_active   = false
+ *
+ * NO NEW TABLE AND NO NEW COLUMN. 'requested' rows become ordinary rows on
+ * approval, so an approved claim costs exactly what a parent-assigned chore
+ * costs. Net new rows per claim beyond what the system would generate anyway:
+ * zero.
+ *
+ * Path 1 rows carry template_id = NULL, which keeps them outside
+ * idx_ca_daily_dedup entirely (its WHERE clause requires template_id IS NOT
+ * NULL) at both the 'requested' and the approved 'pending' stage. That is
+ * deliberate: a child may request a one-off of a chore that is ALSO on their
+ * roster today, and the two rows must not collide.
+ *
+ * Path 2 rows are kept away from the generator by TWO independent layers —
+ * is_active = false here, and the explicit .neq('status','requested') in
+ * runGeneration(). See the comment there.
+ *
+ * REQUESTS NEVER AUTO-EXPIRE. expireLapsedAssignments() filters
+ * is_template = false AND status IN ('pending','in_progress'), so a
+ * 'requested' row is invisible to the nightly sweep. A request made in good
+ * faith stays live until a parent actually answers it — approving one the
+ * morning after is valid, and the child does not lose it to a clock.
+ * ------------------------------------------------------------------ */
+
+/** The child-initiated claim status. One value, both paths. */
+export const REQUESTED_STATUS = 'requested'
+
+/**
+ * Payload guard for the per-child claim reads. Both are naturally bounded —
+ * one by roster size, one by the number of requests a parent has yet to answer
+ * — but per CLAUDE.md every read of this table states its own bound rather
+ * than trusting the shape of the data to stay small.
+ */
+const CLAIM_FETCH_LIMIT = 500
+
+/** A category and the claimable chores inside it. */
+export interface ClaimGroup {
+  category: string
+  chores: Chore[]
+}
+
+/**
+ * The chores THIS child may claim, grouped by category.
+ *
+ * Reads the library through getFamilyChores(), which is the single door that
+ * already excludes RESERVED_CHORE_CATEGORIES and archived rows — so a
+ * 'direct-award' or 'character-moment' receipt can never surface here, and a
+ * new marker category added to that constant is excluded automatically.
+ *
+ * Two per-child exclusions, and PER-CHILD is the whole point: POCO requesting
+ * a chore must not remove it from Cuddles' library.
+ *
+ *   1. The child's ACTIVE roster. Paused entries are deliberately NOT
+ *      excluded — if Eve took a chore off POCO, he may still ask to do it
+ *      once, and that request is exactly the signal she needs.
+ *   2. The child's outstanding requests, in EITHER path.
+ *
+ * Exclusion 2 is not windowed to today, though a request is created for
+ * today. 'requested' is a transient status — a parent resolves it to
+ * 'pending' or 'rejected' — so the set is self-limiting, and matching on the
+ * status rather than on a date is what stops a child from stacking a second
+ * request on a chore whose first request the parent has not answered yet.
+ */
+export async function getClaimableChores(
+  memberId: string,
+  familyId: string
+): Promise<ClaimGroup[]> {
+  const [library, rosterRes, requestedRes, liveOneOffsRes] = await Promise.all([
+    getFamilyChores(familyId),
+    supabase
+      .from('chore_assignments')
+      .select('chore_id')
+      .eq('assigned_to', memberId)
+      .eq('is_template', true)
+      .eq('is_active', true)
+      .neq('status', REQUESTED_STATUS)
+      .limit(CLAIM_FETCH_LIMIT),
+    supabase
+      .from('chore_assignments')
+      .select('chore_id')
+      .eq('assigned_to', memberId)
+      .eq('status', REQUESTED_STATUS)
+      .limit(CLAIM_FETCH_LIMIT),
+    // Door 4 — APPROVED one-off claims the child has not finished with yet.
+    //
+    // `.is('template_id', null)`, NEVER `.eq('template_id', null)`. PostgREST
+    // reads eq.null as an equality test against a value rather than a NULL
+    // test, so the eq form matches nothing and the door silently stands open —
+    // a bug that looks exactly like the filter having no effect.
+    //
+    // template_id IS NULL is the discriminator that makes this read Path 1
+    // ONLY. A roster-generated instance carries a template_id and must not
+    // land here: it is different work. This matters in the PAUSED roster case
+    // specifically — when Eve pauses a chore, door 2 (which requires
+    // is_active) stops excluding it, and the paused entry's leftover live
+    // instances must not block the child from claiming it fresh.
+    //
+    // The due_date floor keeps yesterday's finished one-offs out, so the read
+    // cannot accumulate over time: it holds at most today's live claims.
+    // startOfDay() resolves in the FAMILY's zone via the module-level active
+    // timezone — no zone is named here.
+    supabase
+      .from('chore_assignments')
+      .select('chore_id')
+      .eq('assigned_to', memberId)
+      .eq('is_template', false)
+      .is('template_id', null)
+      .in('status', ['pending', 'in_progress', 'completed'])
+      .gte('due_date', startOfDay(new Date()).toISOString())
+      .limit(CLAIM_FETCH_LIMIT),
+  ])
+  if (rosterRes.error) throw rosterRes.error
+  if (requestedRes.error) throw requestedRes.error
+  if (liveOneOffsRes.error) throw liveOneOffsRes.error
+
+  const taken = new Set<string>()
+  for (const r of rosterRes.data ?? []) if (r.chore_id) taken.add(r.chore_id)
+  for (const r of requestedRes.data ?? []) if (r.chore_id) taken.add(r.chore_id)
+  for (const r of liveOneOffsRes.data ?? []) if (r.chore_id) taken.add(r.chore_id)
+
+  const groups = new Map<string, Chore[]>()
+  for (const chore of library) {
+    if (taken.has(chore.id)) continue
+    const key = chore.category ?? 'other'
+    const list = groups.get(key) ?? []
+    list.push(chore)
+    groups.set(key, list)
+  }
+
+  // getFamilyChores already ordered by title, and Map preserves insertion
+  // order, so each group is alphabetical. Sort the groups themselves so the
+  // category order is stable between loads rather than following whichever
+  // category happened to hold the first chore.
+  return [...groups.entries()]
+    .map(([category, chores]) => ({ category, chores }))
+    .sort((a, b) => a.category.localeCompare(b.category))
+}
+
+/**
+ * PATH 1 — "Do this today". A one-off instance the child asked for.
+ *
+ * assigned_by is the CHILD's own member id: this chore was self-selected, and
+ * the row should say so. (assigned_by references family_members, unlike
+ * chores.created_by which references auth.users — do not mix them.)
+ *
+ * due_date is the end of today IN THE FAMILY'S TIMEZONE via endOfDay(), not
+ * the tablet's. A kiosk in a different zone would otherwise date the request
+ * to the wrong civil day.
+ */
+export async function createOneTimeRequest(choreId: string, memberId: string): Promise<void> {
+  const { error } = await supabase.from('chore_assignments').insert({
+    chore_id: choreId,
+    assigned_to: memberId,
+    assigned_by: memberId,
+    status: REQUESTED_STATUS,
+    is_template: false,
+    template_id: null,
+    due_date: endOfDay(new Date()).toISOString(),
+  })
+  if (error) throw error
+}
+
+/**
+ * PATH 2 — "Add to my regular chores". A roster addition the child asked for.
+ *
+ * is_active = false is load-bearing, not tidiness: it is one of the two layers
+ * keeping an unapproved request away from generateDailyAssignments(). The
+ * other is the explicit status filter in runGeneration(). Approval flips both
+ * fields together.
+ *
+ * No due_date. A template row does not have one — the generator computes each
+ * instance's due date from the chore's frequency when it creates it.
+ */
+export async function createRosterRequest(choreId: string, memberId: string): Promise<void> {
+  const { error } = await supabase.from('chore_assignments').insert({
+    chore_id: choreId,
+    assigned_to: memberId,
+    assigned_by: memberId,
+    status: REQUESTED_STATUS,
+    is_template: true,
+    is_active: false,
+    template_id: null,
+  })
+  if (error) throw error
+}
+
+export interface ChoreRequest extends AssignmentWithChore {
+  member: PendingMember | null
+}
+
+/** Both paths of the parent's request queue, split by is_template. */
+export interface ChoreRequestQueue {
+  /** Path 1 — "wants to do this today". */
+  oneTime: ChoreRequest[]
+  /** Path 2 — "wants this added to their regular chores". */
+  roster: ChoreRequest[]
+}
+
+/**
+ * Every outstanding claim request across the family, oldest first.
+ *
+ * ONE query for both paths, split client-side on is_template. Bounded by
+ * status: 'requested' is transient by construction, so this read cannot grow
+ * with history the way an 'approved' or 'expired' read does.
+ *
+ * Oldest first matches the completed-chore queue above it — the child who has
+ * been waiting longest is answered first.
+ */
+export async function getChoreRequests(): Promise<ChoreRequestQueue> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select(
+      '*, chore:chores(*), member:family_members!chore_assignments_assigned_to_fkey(id,display_name,avatar_url)'
+    )
+    .eq('status', REQUESTED_STATUS)
+    .order('created_at', { ascending: true })
+    .limit(CLAIM_FETCH_LIMIT)
+  if (error) throw error
+  const rows = (data ?? []) as unknown as ChoreRequest[]
+  return {
+    oneTime: rows.filter((r) => !r.is_template),
+    roster: rows.filter((r) => r.is_template),
+  }
+}
+
+/**
+ * Which library chores currently have an outstanding request, and from whom —
+ * for the badge on the parent's Chore Library tiles.
+ *
+ * Gives Eve the signal without a trip to the approval queue: she can see what
+ * the kids are asking for while she is already editing the library.
+ *
+ * Keyed by chore_id, with the child display names attached. A chore both
+ * children have asked for lists both.
+ */
+export async function getRequestedChoreNames(): Promise<Map<string, string[]>> {
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('chore_id, member:family_members!chore_assignments_assigned_to_fkey(display_name)')
+    .eq('status', REQUESTED_STATUS)
+    .limit(CLAIM_FETCH_LIMIT)
+  if (error) throw error
+  const out = new Map<string, string[]>()
+  for (const row of (data ?? []) as unknown as {
+    chore_id: string | null
+    member: { display_name: string | null } | null
+  }[]) {
+    if (!row.chore_id) continue
+    const name = row.member?.display_name
+    if (!name) continue
+    const list = out.get(row.chore_id) ?? []
+    if (!list.includes(name)) list.push(name)
+    out.set(row.chore_id, list)
+  }
+  return out
+}
+
+/**
+ * Decline a claim request, either path. The note is REQUIRED — a child who
+ * asked to do more work deserves a reason, and this is the same note field
+ * rejectChore writes, read by the same "Recent misses" section.
+ *
+ * Guarded with .eq('status', REQUESTED_STATUS) so a stale queue on a second
+ * tablet cannot re-reject a request a parent already approved, which would
+ * silently pull an approved chore back off the child's list.
+ *
+ * A declined Path 2 row keeps is_active = false and so is permanently inert:
+ * it can never generate an instance, and getRoster() will not show it (that
+ * read excludes 'requested', and a rejected template is not a roster entry any
+ * screen offers controls for).
+ */
+export async function declineChoreRequest(assignmentId: string, note: string): Promise<void> {
+  const trimmed = note.trim()
+  if (!trimmed) throw new Error('A note is required when declining a request.')
+  const { error } = await supabase
+    .from('chore_assignments')
+    .update({ status: 'rejected', notes: trimmed })
+    .eq('id', assignmentId)
+    .eq('status', REQUESTED_STATUS)
+  if (error) throw error
+}
+
+/**
+ * Approve a claim request. ONE function, TWO payload shapes — because the two
+ * paths are different row shapes, not two flavours of the same write.
+ *
+ * PATH 1 (isRoster = false) — status, AND A REFRESHED due_date.
+ *
+ *   The due_date refresh is not tidiness, it is the difference between the
+ *   approval working and doing nothing at all. createOneTimeRequest stamps
+ *   due_date = end of the day the child asked. A 'requested' row survives the
+ *   night safely (expireLapsedAssignments filters pending/in_progress, so the
+ *   sweep cannot see it) — but the moment approval sets status = 'pending'
+ *   with yesterday's timestamp still on it, isLapsed() is true, ChoreCard
+ *   stops offering Complete, and the very next generation pass expires the
+ *   row outright. The child would watch an approved chore arrive dead.
+ *
+ *   So approval re-dates the chore to the end of the APPROVAL day. A request
+ *   made in good faith stays valid, and the child gets a full day to do it —
+ *   which is what "still valid" has to mean mechanically rather than just
+ *   philosophically.
+ *
+ *   is_active is deliberately untouched. Nothing reads it on an instance row
+ *   (dailyRosterTotal is the only consumer and it filters is_template first),
+ *   so writing it would be noise implying a meaning it does not have.
+ *
+ * PATH 2 (isRoster = true) — status AND is_active, together.
+ *
+ *   is_active = true is what actually releases the template to the generator;
+ *   status = 'pending' is what clears the .neq('status','requested') filter in
+ *   runGeneration(). BOTH layers have to lift or the roster entry is approved
+ *   and still never generates. Flipping them in ONE update means there is no
+ *   instant where a row is half-approved.
+ *
+ *   No due_date: a template row does not have one. The generator computes each
+ *   instance's due date from the chore's frequency, so the entry starts
+ *   producing instances on the next parent-dashboard pass — immediate and
+ *   automatic, with no further parent action.
+ *
+ * TWO GUARDS ON BOTH PATHS.
+ *
+ *   .eq('status', REQUESTED_STATUS) — a stale queue on a second tablet cannot
+ *   re-approve something already resolved, which on Path 1 would silently
+ *   re-date a chore the child had already finished.
+ *
+ *   .eq('is_template', isRoster) — the shape guard. A caller passing the wrong
+ *   flag matches ZERO rows and throws, instead of writing a template-shaped
+ *   payload onto an instance row (or re-dating a template that should never
+ *   carry a due_date). Failing loudly is the correct direction here: a silent
+ *   wrong-shape write would be invisible until the generator misbehaved days
+ *   later.
+ *
+ * endOfDay() resolves in the FAMILY's timezone — its tz parameter defaults to
+ * the module-level active zone that AuthProvider points at families.timezone.
+ * No zone is named here, and none should be.
+ */
+export async function approveChoreRequest(
+  assignmentId: string,
+  isRoster: boolean
+): Promise<void> {
+  const patch = isRoster
+    ? { status: 'pending', is_active: true }
+    : { status: 'pending', due_date: endOfDay(new Date()).toISOString() }
+
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .update(patch)
+    .eq('id', assignmentId)
+    .eq('status', REQUESTED_STATUS)
+    .eq('is_template', isRoster)
+    .select('id')
+  if (error) throw error
+  if (!data || data.length === 0) {
+    // Zero rows means the guards rejected the write: either another tablet
+    // already resolved this request, or the caller's isRoster flag disagrees
+    // with the stored row. Both are worth surfacing rather than reporting a
+    // success the database never performed.
+    throw new Error('That request was already answered — refresh to see its current state.')
+  }
+}
+
+/**
+ * Declined ROSTER requests (Path 2) from the last N days, for the child's
+ * "Recent misses" section.
+ *
+ * A SEPARATE READ FROM getRejectedSince, and it has to be. That function
+ * filters is_template = false and bounds on due_date — and a declined roster
+ * request is a TEMPLATE row with NO due_date at all, so it matches neither
+ * predicate. Without this read a child who asked to take on a regular chore
+ * and was turned down would simply never be told: the row exists, the parent's
+ * note is on it, and nothing on any child screen would ever show it.
+ *
+ * BOUNDED ON created_at, because a template row has no due_date to bound on
+ * and this table has no updated_at column. created_at is the moment the child
+ * ASKED rather than the moment the parent answered, so a request that sat
+ * unanswered for longer than the window drops out of view even if it was
+ * declined today. That is the honest limit of the columns available; closing
+ * it would mean a schema change for a display detail, which is not a trade
+ * worth making. Requests are answered in a day or two in practice.
+ *
+ * Bounded by status AND date, per the rule in CLAUDE.md — 'rejected' templates
+ * accumulate slowly (one per declined request, ever), so the date window is
+ * what keeps this read from growing with the family's history.
+ */
+export async function getDeclinedRosterRequestsSince(
+  memberId: string,
+  days: number = REJECTED_WINDOW_DAYS
+): Promise<AssignmentWithChore[]> {
+  const since = addDays(startOfDay(new Date()), -days)
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .select('*, chore:chores(*)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', true)
+    .eq('status', 'rejected')
+    .gte('created_at', since.toISOString())
+    .order('created_at', { ascending: false })
+    .limit(CLAIM_FETCH_LIMIT)
+  if (error) throw error
+  return (data ?? []) as AssignmentWithChore[]
 }

@@ -580,6 +580,180 @@ live: POCO's balance was unchanged by loan creation.
   Overdrafts are allowed by design, and a loan payment may deliberately create
   one. Verified live: POCO reached -$2.53 through the real money path.
 
+### SCHEMA FACTS — CLAIM LIBRARY (added 2026-09-03)
+
+Children browse a library and REQUEST chores; parents approve. Built because
+Eve's 85-entry roster was a symptom of a missing workflow, not a judgement
+error: the only way to make a chore AVAILABLE was to assign it permanently.
+
+'requested' was added to the chore_assignments.status CHECK constraint on
+2026-09-03 (migration 20260903203201). Seven values now.
+
+NO INDEX CHANGE WAS NEEDED, and this was verified before the ALTER rather than
+assumed. idx_ca_daily_dedup's WHERE clause already carries
+`template_id IS NOT NULL`, and a Path 1 request has template_id NULL, so a
+claim row never enters that index at either the 'requested' or the approved
+'pending' stage. Adding 'requested' to the index predicate would have been dead
+code. The coexistence this produces is INTENDED: a child may request a one-off
+of a chore that is ALSO on their roster that day, and the two rows must not
+collide.
+
+TWO PATHS, ONE STATUS. is_template is the discriminator.
+
+  PATH 1 — "Do this today"
+    insert: is_template = false, template_id = NULL, status = 'requested',
+            due_date = endOfDay(now) in the FAMILY's zone
+    approve: status -> 'pending' AND due_date refreshed
+    decline: status -> 'rejected', note required
+
+  PATH 2 — "Add to my regular chores"
+    insert: is_template = true, is_active = FALSE, status = 'requested',
+            no due_date (templates have none)
+    approve: status -> 'pending' AND is_active -> true, IN ONE UPDATE
+    decline: status -> 'rejected', is_active STAYS false — the row is
+             permanently inert: it can never generate, and getRoster()
+             excludes it.
+
+NO NEW TABLE, NO NEW COLUMN. An approved claim becomes an ordinary row, so it
+costs exactly what a parent-assigned chore costs. Net new rows per claim beyond
+what the system would generate anyway: zero.
+
+#### The Path 2 generator hazard — BELT AND BRACES, both layers intentional
+
+runGeneration() read templates with only `.eq('is_template',true)` and
+`.eq('is_active',true)` — NO status filter. A Path 2 request matches both, so a
+child tapping "Add to my regulars" would have started generating daily
+instances on the NEXT parent-dashboard load, before the parent ever saw the
+request. The approval step would have been decorative. getRoster() had the same
+gap and would have rendered an unapproved request as a live roster entry with
+working pause/delete controls.
+
+TWO INDEPENDENT LAYERS now, and neither is redundant:
+  1. is_active = false at insert (excluded by the existing is_active filter)
+  2. explicit `.neq('status','requested')` on runGeneration()'s template read
+     AND on getRoster()
+
+Layer 2 is the load-bearing one per the rule in this file — every read of this
+table states its status filter rather than trusting another column to imply it.
+Layer 1 survives someone flipping is_active for an unrelated reason.
+
+VERIFIED LIVE 2026-09-03: with an unapproved Path 2 row present, a parent
+dashboard load ran generateDailyAssignments() and produced 0 instances for it.
+This was the highest-value check in the session — the whole feature is
+decorative if it fails.
+
+#### getClaimableChores() — four doors, ALL per-child
+
+Four reads in one Promise.all:
+
+  Door 1  getFamilyChores() — excludes RESERVED_CHORE_CATEGORIES and archived.
+          The single library door, so a new marker category added to that
+          constant is excluded here automatically.
+  Door 2  the child's ACTIVE roster (is_template = true, is_active = true).
+          Paused entries deliberately NOT excluded — if Eve took a chore off a
+          child, they may still ask to do it once, and that request is exactly
+          the signal she needs.
+  Door 3  the child's outstanding requests, either path (status = 'requested').
+          Not windowed to today: 'requested' is transient, and matching on the
+          status stops a child stacking a second request on one a parent has
+          not answered.
+  Door 4  the child's LIVE one-off claims (is_template = false,
+          template_id IS NULL, status IN pending/in_progress/completed,
+          due_date >= start of today). Stops a chore appearing as "available"
+          while it sits on the child's own list.
+
+`.is('template_id', null)`, NEVER `.eq('template_id', null)`. PostgREST reads
+eq.null as an equality test against a value rather than a NULL test, so the eq
+form matches nothing and door 4 silently stands open — a bug that looks exactly
+like the filter having no effect.
+
+Door 4's template_id predicate makes it Path-1-only. It matters in the PAUSED
+roster case specifically: when a chore is paused, door 2 stops excluding it, and
+the paused entry's leftover live instances must not block a fresh claim.
+
+A CHILD CANNOT ONE-OFF CLAIM A CHORE ON THEIR OWN ACTIVE ROSTER — door 2
+removes it from the library entirely. The roster instance is the correct vehicle
+for that day's work. Paused roster chores DO appear, since door 4 tracks
+one-offs separately.
+
+TRUNCATION SAFETY. Neither chore_assignments read touches the growing part of
+the table: door 2 is bounded by is_template (roster size), doors 3 and 4 by
+transient statuses plus a date floor. Instance rows — the ~51/day behind all
+four prior truncation bugs — cannot compete for either read's rows. The 500
+limits are payload guards, not the correctness mechanism.
+
+PER-CHILD ISOLATION — COVERAGE GAP, recorded honestly. The per-child isolation
+of door 4 is verified BY CONSTRUCTION: the `.eq('assigned_to', memberId)`
+filter is per-child by definition. Direct observation was not possible in the
+2026-09-03 verification session because POCO's only live one-off (Clean TV Room)
+was ALSO on Cuddles' active roster, so her view excluded it via door 2 rather
+than door 4. The filtering logic is sound; that specific path is proven by code
+inspection, not by data. Isolation itself WAS observed on another chore: POCO
+held a rejected roster request on "Clean Personal Area at Table" and it appeared
+freely claimable to Cuddles, with category counts diverging 32 vs 33.
+
+#### Path 1 approval always refreshes due_date
+
+approveChoreRequest() sets due_date = endOfDay(approvalDate) in the family's
+timezone, unconditionally, on the Path 1 branch.
+
+This is NOT cosmetic. createOneTimeRequest stamps the end of the day the child
+asked. A 'requested' row survives the night safely — expireLapsedAssignments()
+filters is_template = false AND status IN ('pending','in_progress'), so the
+sweep cannot see it. But the moment approval sets status = 'pending' with
+yesterday's timestamp still on it, isLapsed() is true, ChoreCard stops offering
+Complete, and the next generation pass expires the row outright. The child would
+watch an approved chore arrive dead.
+
+UNVERIFIABLE ON SAME-DAY APPROVAL, since the refreshed value is identical to the
+original. The refresh exists for overnight approvals — a child requests Tuesday
+evening, a parent approves Wednesday morning, the chore is valid for Wednesday
+not Tuesday. Verified by code inspection, not by data observation.
+
+#### Requests never auto-expire
+
+expireLapsedAssignments() filters is_template = false AND status IN
+('pending','in_progress'), so a 'requested' row is invisible to the sweep. A
+request made in good faith stays live until a parent actually answers it.
+
+#### Approved claims are structurally identical to assigned chores
+
+Once approved, a Path 1 claim IS an ordinary pending instance row. ChoreCard
+renders it identically to any parent-assigned chore by design — the origin of
+the assignment is irrelevant to the work and the reward. ChoreCard has no branch
+on is_template or on who created the row, so this is structural rather than
+styled. The book's system does not care whether a parent or a child initiated
+the work.
+
+The same applies to a DECLINED roster request in "Recent misses": it renders
+with the same NOT APPROVED pill and note block as a rejected regular chore.
+
+#### Declined roster requests need their own read
+
+getRejectedSince() filters is_template = false and bounds on due_date. A
+declined ROSTER request is a TEMPLATE row with NO due_date, so it matches
+neither predicate. Without a second read the parent's note would exist in the
+database and appear on NO child screen anywhere — the child asked to take on
+more work, was turned down, and would never be told why.
+
+getDeclinedRosterRequestsSince() covers it, bounded on created_at because a
+template row has no due_date and this table has no updated_at column. created_at
+is when the child ASKED, not when the parent answered, so a request left
+unanswered longer than the 14-day window drops out of view even if declined
+today. That is the honest limit of the available columns; closing it would mean
+a schema change for a display detail.
+
+The child Chores tab's inFilterWindow() additionally treats is_template rows as
+always in-window. A template row has no due_date, so every date filter would
+otherwise drop it and the decline would surface only under "All".
+
+#### getChoreUsage() — known behaviour, not a bug
+
+getChoreUsage() counts is_template rows with no status filter. A pending Path 2
+roster request inflates the usage count and PREVENTS hard deletion of the source
+library chore. This fails safe — a parent must decline the request before
+deleting the chore. Unintentional, but correct.
+
 ## Dev-environment artifacts (not production bugs)
 
 - HMR WEDGE ON "Switch user" (observed 2026-09-01). After editing a component,
@@ -590,6 +764,14 @@ live: POCO's balance was unchanged by loan creation.
   touched by the goals work. Production has no HMR, so this cannot occur there.
   Do not go hunting for a Switch user regression on the strength of a dev
   session — reload first and re-test before investigating.
+
+- SWITCH USER FIRST CLICK, occasionally (observed 2026-09-03). The Switch user
+  control sometimes needs a second tap when the page is still settling after a
+  navigation; the second always fires. DISTINCT from the modal backdrop bug,
+  which is fixed — no modal was open on the occasions observed. Root cause
+  unknown, possibly focus capture during a React re-render. Low priority and
+  consistent with the dev-only HMR pattern above. Do not investigate on the
+  strength of a dev session.
 
 ## Kiosk rules
 - All touch targets minimum 64px
@@ -647,6 +829,44 @@ The last state scrolls, and that is accepted rather than fixed. It requires two
 card carries shrink-0 deliberately: compression is worse than scrolling one
 card's worth, and a flex child without it is silently squashed rather than
 pushing the column into scroll.
+
+## FIXED 2026-09-03 — modal backdrop swallowed the first click after close
+
+The shared Modal ate the first tap on anything underneath it for ~150ms after
+closing. Reproduced three times during the loan session (Run Monthly Deductions,
+Forgive) and three more times on the claim screen, where it was far worse.
+
+THE CULPRIT WAS NOT THE BACKDROP, despite the name this bug carried for a month.
+`<div className="absolute inset-0 bg-deep/80" onClick={onClose} />` is the
+obvious suspect because it holds the dismiss handler, but the element actually
+swallowing taps is the ROOT `motion.div` — `fixed inset-0 z-50`. A full-screen
+positioned div is a hit target whether or not it has an onClick, and
+AnimatePresence keeps the entire subtree mounted for the whole exit animation.
+Putting `pointer-events: none` on the backdrop alone would have changed nothing.
+
+THE FIX, in src/components/ui/Modal.tsx:
+
+    animate={{ opacity: 1, pointerEvents: 'auto' }}
+    exit={{ opacity: 0, pointerEvents: 'none' }}
+
+On the root, so the whole subtree inherits it and the dialog also stops taking
+clicks while it leaves. `pointerEvents` is not an animatable value, so
+framer-motion applies it at the INSTANT exit begins rather than easing it —
+which is the semantics needed: dead the moment the close starts, not 150ms later.
+
+WHY IT WAS PROMOTED OFF THE PRE-LAUNCH LIST. The claim library made it the
+primary interaction loop rather than an occasional annoyance: browse -> tap
+chore -> submit -> tap next chore hits the dead window on EVERY iteration. A
+child who taps and sees nothing concludes the app is broken, on the one screen
+whose entire purpose is inviting them to choose more work.
+
+VERIFYING THIS CLASS OF BUG — the trap that cost a cycle here. An automated
+click fired immediately after a submit lands while the request is still in
+flight and the modal is therefore still OPEN, so it hits the dialog and proves
+nothing. The valid sequence is: submit -> confirm the modal is GONE -> single
+tap -> assert it registered. Test with a target OUTSIDE the dialog's footprint
+(the bottom nav is ideal); a target underneath the dialog box cannot distinguish
+"swallowed by the exit overlay" from "hit the still-open dialog".
 
 ## Known layout traps
 
@@ -706,6 +926,10 @@ warn you it has gone stale.
   roster entries had NO completion that week. The screen was built to surface
   exactly this, and the first thing it surfaced was that the roster is too large
   for the children's current stage -- the book's "Kitchen Sink" warning, live.
+  UPDATE 2026-09-03: the claim library shipped, which is the MECHANISM that
+  makes a small roster workable — but the roster itself is still 85 entries.
+  Shipping the feature did not reduce it. See "ROSTER MANAGEMENT" below for the
+  recommended reduction.
 
 - TRUNCATION CLASS INSTANCE 5 — getTransactionHistory (child My Bank ledger)
   still issues two UNBOUNDED selects and derives the running balance from the
@@ -715,15 +939,6 @@ warn you it has gone stale.
   display-only and the fix is a product decision about how much history a
   child's ledger should show, not a one-line bound. The MONTH FIGURES above it
   no longer depend on it. Fix before public launch.
-
-- MODAL BACKDROP SWALLOWS CLICKS DURING EXIT. The shared Modal's backdrop stays
-  clickable through its ~150ms exit animation, so the first click on any button
-  sitting underneath a just-closed modal is eaten. Reproduced three times on
-  2026-09-03 (Run Monthly Deductions and Forgive, both under a closing New Loan
-  modal). Predates the loan work and affects every screen with a modal.
-  FIX: `pointer-events: none` on the backdrop while exiting. Before public
-  launch — a parent who taps once and sees nothing happen will tap again, and on
-  a destructive control that is worse than cosmetic.
 
 - CHILD DASHBOARD QUERY BUDGET: 2 reads, as of the loan session. The completion
   rate read (getInstancesDueBetween) was REMOVED and the loan state read
@@ -888,27 +1103,47 @@ Parents can change it in Settings afterwards; the detection is just a sensible
 default so no family is silently created in the wrong zone. For families that
 already exist, the Settings selector is the mechanism.
 
-## NEXT FEATURE — Available chores to claim
+## SHIPPED 2026-09-03 — Available chores to claim
 
-Do not start this without Gary asking; recorded here so the context survives
-the session.
+DONE. Both paths built, verified 27/27 against live family data, and deployed.
+See "SCHEMA FACTS — CLAIM LIBRARY" above for the mechanism, the two-layer
+generator guard, the four doors of getClaimableChores(), and the recorded
+coverage gap.
 
-Eve over-assigned the roster (85 entries) because the kids had no way to
-self-select chores and kept asking her to assign them manually. The roster size
-is a symptom of a missing workflow, not a judgement error — and the Family Week
-System Health screen already surfaced it (56 of 85 active entries had no
-completion in a week).
+The original motivation, kept because it is the lesson: Eve over-assigned the
+roster (85 entries) because the kids had no way to self-select chores and kept
+asking her to assign them manually. The roster size was a symptom of a MISSING
+WORKFLOW, not a judgement error — and the Family Week System Health screen
+surfaced it before anyone named it (56 of 85 active entries had no completion in
+a week).
 
-SOLUTION: a small mandatory core roster (5-8 chores per child) plus a browsable
-claim library.
+### ROSTER MANAGEMENT — the follow-up this feature enables
 
-TWO CLAIM PATHS, both requiring parent approval:
- 1. "Do this once" — a one-time instance, status = 'requested'.
- 2. "Add to my regular chores" — a roster addition request, approved as a new
-    template entry.
+The claim library is live, but THE ROSTER HAS NOT BEEN REDUCED YET. Shipping the
+mechanism does not by itself fix the 85 entries; that is a deliberate act
+someone has to perform.
 
-SCHEMA: add 'requested' to the chore_assignments.status CHECK constraint. One
-ALTER TABLE. No new table needed.
+RECOMMENDED APPROACH: cut each child's roster to a mandatory core of 5-8 entries
+— daily routine, hygiene, and the household chores actually assigned to them —
+and move everything else into the library as claimable. Children browse and
+request; parents approve. Eve is no longer the bottleneck between a motivated
+child and a chore.
+
+Pause roster entries rather than deleting them (setRosterEntryActive(false)):
+pausing is reversible and keeps every instance already generated, while deleting
+a template is permanent. Paused chores still appear in the claim library, which
+is exactly the behaviour wanted here — a chore comes off the mandatory list and
+becomes something a child can choose.
+
+Re-read the Family Week System Health section afterwards; it is the instrument
+that measures whether the reduction worked.
+
+## NEXT FEATURE — none currently queued
+
+Nothing is recorded here. The standing priorities are in the pre-launch
+checklist above: getTransactionHistory (truncation class instance 5), bundle
+code-splitting, SCHEMA COMPLETENESS (the from-scratch rebuild), and the roster
+reduction described immediately above.
 
 ## V2 Architecture Notes
 
@@ -1050,8 +1285,8 @@ This is housekeeping, not a space fix — see the footprint numbers above.
 ## Migration audit — 2026-09-01
 
 Compared `supabase/migrations/` against the live project's applied migration
-history. As of 2026-09-03 20 migrations are applied remotely; the repo captures
-10. (Was 17 / 7 when this audit was written on 2026-09-01.)
+history. As of 2026-09-03 21 migrations are applied remotely; the repo captures
+11. (Was 17 / 7 when this audit was written on 2026-09-01.)
 
 CAPTURED IN THE REPO (7):
 - 20260828212105 pin_server_side_verification_additive
@@ -1064,6 +1299,7 @@ CAPTURED IN THE REPO (7):
 - 20260903180404 create_loans_table
 - 20260903180429 create_process_loan_payments
 - 20260903201021 timezone_reconciliation_dynamic_family_timezone
+- 20260903203201 add_requested_to_chore_assignment_status
 
 LIVE BUT NOT IN THE REPO (10) — all predate 2026-09-01:
 - 20260808214850 add_member_pins_to_families

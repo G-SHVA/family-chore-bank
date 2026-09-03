@@ -6,6 +6,7 @@ import Login from '@/pages/Login'
 import { ChildLayout } from '@/components/layout/ChildLayout'
 import ChildDashboard from '@/pages/child/Dashboard'
 import ChildChores from '@/pages/child/Chores'
+import ChildClaim from '@/pages/child/Claim'
 import ChildBank from '@/pages/child/Bank'
 import ChildAchievements from '@/pages/child/Achievements'
 import { ParentLayout } from '@/components/layout/ParentLayout'
@@ -38,6 +39,7 @@ function AppGate() {
       <Route path="/child/:memberId" element={<ChildLayout />}>
         <Route index element={<ChildDashboard />} />
         <Route path="chores" element={<ChildChores />} />
+        <Route path="claim" element={<ChildClaim />} />
         <Route path="bank" element={<ChildBank />} />
         <Route path="achievements" element={<ChildAchievements />} />
       </Route>

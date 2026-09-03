@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { Loader2, Flame, AlertTriangle } from 'lucide-react'
+import { useParams, Link } from 'react-router-dom'
+import { Loader2, Flame, AlertTriangle, ChevronRight } from 'lucide-react'
 import { AnimatePresence } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -261,6 +261,26 @@ export default function ChildDashboard() {
             </AnimatePresence>
           </div>
         )}
+
+        {/* The claim library, reached by ONE understated line — deliberately
+            not a card, not a filled button, and not a fifth nav tab.
+            
+            This screen was cut from 90 cards to 2 this session; the way to
+            keep it that way is for new capability to arrive as a link out
+            rather than as more surface here. A child with nothing left to do
+            sees it directly under the empty state, which is exactly the
+            moment it is useful.
+            
+            shrink-0 because this is a flex child of a height-constrained
+            column: without it the link is silently compressed instead of the
+            list above it giving up space. Same trap as the left column. */}
+        <Link
+          to={memberId ? `/child/${memberId}/claim` : '/'}
+          className="label-caps flex min-h-touch shrink-0 items-center gap-2 text-[11px] text-antique hover:text-gold"
+        >
+          Browse available chores
+          <ChevronRight className="h-4 w-4" />
+        </Link>
       </div>
     </div>
   )
