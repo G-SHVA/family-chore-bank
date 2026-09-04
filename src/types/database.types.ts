@@ -29,6 +29,7 @@ export type Database = {
           is_template: boolean
           notes: string | null
           recurrence_dow: number | null
+          recurrence_week: number | null
           status: string | null
           template_id: string | null
         }
@@ -46,6 +47,7 @@ export type Database = {
           is_template?: boolean
           notes?: string | null
           recurrence_dow?: number | null
+          recurrence_week?: number | null
           status?: string | null
           template_id?: string | null
         }
@@ -63,6 +65,7 @@ export type Database = {
           is_template?: boolean
           notes?: string | null
           recurrence_dow?: number | null
+          recurrence_week?: number | null
           status?: string | null
           template_id?: string | null
         }
@@ -112,6 +115,7 @@ export type Database = {
           is_template: boolean
           notes: string | null
           recurrence_dow: number | null
+          recurrence_week: number | null
           status: string | null
           template_id: string | null
         }
@@ -129,6 +133,7 @@ export type Database = {
           is_template?: boolean
           notes?: string | null
           recurrence_dow?: number | null
+          recurrence_week?: number | null
           status?: string | null
           template_id?: string | null
         }
@@ -146,6 +151,7 @@ export type Database = {
           is_template?: boolean
           notes?: string | null
           recurrence_dow?: number | null
+          recurrence_week?: number | null
           status?: string | null
           template_id?: string | null
         }

@@ -11,10 +11,12 @@ import {
   endOfDay,
   endOfMonth,
   endOfWeek,
+  getZonedParts,
   shiftDayKey,
   startOfDay,
   startOfMonth,
   startOfWeek,
+  zonedTimeToUtc,
 } from '@/lib/time'
 
 export type Frequency = 'once' | 'daily' | 'weekly' | 'monthly'
@@ -61,6 +63,44 @@ export function dayLabel(dow: number | null | undefined): string | null {
   return dow === null || dow === undefined ? null : (DAY_LABELS[dow] ?? null)
 }
 
+/** Abbreviated weekday names, indexed the same way as DAY_LABELS. */
+export const DAY_LABELS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+
+/**
+ * Ordinal week labels, indexed by recurrence_week (1-4). Index 0 is unused and
+ * empty so the array can be indexed by the stored value directly rather than
+ * offset by one at every call site.
+ */
+export const WEEK_LABELS = ['', '1st', '2nd', '3rd', '4th'] as const
+
+/**
+ * THE SINGLE SOURCE OF TRUTH for how a chore's schedule is written anywhere in
+ * the app — roster list, chore library, claim library, child chore cards, the
+ * Chores tab, Family Week, Quick Add. No component formats a frequency itself.
+ *
+ * An unpinned chore reads as the bare frequency, which is exactly what it is:
+ * a weekly chore with no day is due at the end of the week, and a monthly one
+ * with no week/day is due at the end of the month. Only a pinned chore earns
+ * the longer label, so existing rosters read the way they always have.
+ */
+export function formatFrequency(
+  frequency: string | null | undefined,
+  recurrenceDow: number | null | undefined,
+  recurrenceWeek: number | null | undefined
+): string {
+  const freq = frequency ?? 'daily'
+  const dow = recurrenceDow ?? null
+  const week = recurrenceWeek ?? null
+
+  if (freq === 'weekly' && dow !== null && DAY_LABELS_SHORT[dow]) {
+    return `Weekly — ${DAY_LABELS_SHORT[dow]}`
+  }
+  if (freq === 'monthly' && dow !== null && week !== null && DAY_LABELS_SHORT[dow] && WEEK_LABELS[week]) {
+    return `Monthly — ${WEEK_LABELS[week]} ${DAY_LABELS_SHORT[dow]}`
+  }
+  return freq.charAt(0).toUpperCase() + freq.slice(1)
+}
+
 /**
  * The due date for a weekly chore pinned to a day of week — this week's
  * occurrence of that day. Returns null when the day has already passed: the
@@ -77,10 +117,63 @@ function weeklyDueDate(dow: number, now: Date): Date | null {
   return due < now ? null : due
 }
 
-/** When the next instance of a template should fall due, or null to skip. */
-function nextDueDate(freq: Frequency, dow: number | null, now: Date): Date | null {
+/**
+ * The Nth occurrence of a weekday in a given month, at end of day.
+ *
+ * `week` is 1-4 and `dow` is 0 = Sunday … 6 = Saturday.
+ *
+ * WEEKS STOP AT 4, AND THAT IS ARITHMETIC RATHER THAN CONVENTION. Every month
+ * has at least 28 days, and 1 + 6 + (4 - 1) * 7 = 28, so the 4th occurrence of
+ * any weekday always exists. A 5th does not reliably exist, and allowing one
+ * would mean inventing a "last weekday" fallback for the months that lack it.
+ * The CHECK (recurrence_week BETWEEN 1 AND 4) on the column is justified by
+ * that bound — do not widen it to 5.
+ *
+ * `month` may be 13; zonedTimeToUtc normalises it to the following January,
+ * the same normalisation endOfMonth relies on when it asks for day 0.
+ */
+function nthWeekdayOfMonth(year: number, month: number, week: number, dow: number): Date {
+  const first = zonedTimeToUtc(year, month, 1)
+  const firstDow = getZonedParts(first).weekday
+  const dayOfMonth = 1 + ((dow - firstDow + 7) % 7) + (week - 1) * 7
+  // Anchored at noon before endOfDay reads the civil date back off it. A DST
+  // transition can move local midnight, and noon is never within an hour of
+  // one, so the date cannot slip a day either side.
+  return endOfDay(zonedTimeToUtc(year, month, dayOfMonth, 12))
+}
+
+/**
+ * The due date for a monthly chore pinned to an Nth weekday — this month's
+ * occurrence of it. Returns null once that day has passed.
+ *
+ * Null, NOT next month's date, exactly as weeklyDueDate returns null rather
+ * than rolling to next week. The opportunity window closed; a new one opens
+ * next period. Rolling forward would leave a pending instance on the child's
+ * dashboard for up to a full month — isActionable() treats a future-dated
+ * pending row as live — showing a due date weeks away.
+ */
+function monthlyDueDate(week: number, dow: number, now: Date): Date | null {
+  const p = getZonedParts(now)
+  const due = nthWeekdayOfMonth(p.year, p.month, week, dow)
+  return due < now ? null : due
+}
+
+/**
+ * When the next instance of a template should fall due, or null to skip.
+ *
+ * An unpinned template (dow null, or monthly with either half null) keeps the
+ * original behaviour: due at the end of its period. Existing rosters are
+ * unaffected by the pinning added above them.
+ */
+function nextDueDate(
+  freq: Frequency,
+  dow: number | null,
+  week: number | null,
+  now: Date
+): Date | null {
   if (freq === 'once') return endOfDay(now)
   if (freq === 'weekly' && dow !== null) return weeklyDueDate(dow, now)
+  if (freq === 'monthly' && dow !== null && week !== null) return monthlyDueDate(week, dow, now)
   return periodWindow(freq, now).end
 }
 
@@ -291,7 +384,7 @@ async function runGeneration(now: Date): Promise<number> {
     // Dedupe against the period that *contains the target due date*, so a
     // weekly chore pinned to a weekday that has already passed rolls to next
     // week without also generating a second instance when that week arrives.
-    const due = nextDueDate(freq, t.recurrence_dow, now)
+    const due = nextDueDate(freq, t.recurrence_dow, t.recurrence_week, now)
     if (!due) continue // pinned weekday already passed — resumes next week
     const win = periodWindow(freq, due)
     const hasThisPeriod = existing.some((i) => {
@@ -992,7 +1085,8 @@ export async function assignChoreToMembers(
   choreId: string,
   memberIds: string[],
   assignedBy: string,
-  recurrenceDow: number | null = null
+  recurrenceDow: number | null = null,
+  recurrenceWeek: number | null = null
 ): Promise<void> {
   if (memberIds.length === 0) return
   const { error } = await supabase.from('chore_assignments').insert(
@@ -1004,6 +1098,7 @@ export async function assignChoreToMembers(
       is_template: true,
       is_active: true,
       recurrence_dow: recurrenceDow,
+      recurrence_week: recurrenceWeek,
     }))
   )
   if (error) throw error
@@ -1543,10 +1638,18 @@ export async function setRosterEntryActive(templateId: string, isActive: boolean
 }
 
 /** Change which day of the week a weekly roster entry falls due. */
-export async function setRosterEntryDay(templateId: string, dow: number | null): Promise<void> {
+export async function setRosterEntrySchedule(
+  templateId: string,
+  dow: number | null,
+  week: number | null = null
+): Promise<void> {
   const { error } = await supabase
     .from('chore_assignments')
-    .update({ recurrence_dow: dow })
+    // Both columns are written every time, including the nulls. A weekly entry
+    // must clear any recurrence_week left behind by a frequency change, or a
+    // stale week would sit on a row where nothing reads it and reappear if the
+    // chore were ever switched back to monthly.
+    .update({ recurrence_dow: dow, recurrence_week: week })
     .eq('id', templateId)
     .eq('is_template', true)
   if (error) throw error

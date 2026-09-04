@@ -27,11 +27,10 @@ import {
   unarchiveChore,
   assignChoreToMembers,
   setRosterEntryActive,
-  setRosterEntryDay,
+  setRosterEntrySchedule,
   removeRosterEntry,
   dailyRosterTotal,
-  dayLabel,
-  DAY_LABELS,
+  formatFrequency,
   type ChoreInput,
   type ChoreUsage,
   type RosterEntry,
@@ -44,6 +43,7 @@ import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
+import { SchedulePicker } from '@/components/shared/SchedulePicker'
 import { cn, formatCurrency } from '@/lib/utils'
 import { formatDateInZone } from '@/lib/time'
 
@@ -194,10 +194,10 @@ export default function ChoresTab() {
                   'Could not update that roster entry.'
                 )
               }
-              onDay={(entry, dow) =>
+              onSchedule={(entry, dow, week) =>
                 run(
                   entry.id,
-                  () => setRosterEntryDay(entry.id, dow),
+                  () => setRosterEntrySchedule(entry.id, dow, week),
                   'Could not change the day for that chore.'
                 )
               }
@@ -367,7 +367,7 @@ export default function ChoresTab() {
                       {formatCurrency(c.value, currency)}
                     </span>
                     <span className="label-caps truncate text-[10px] text-text-muted">
-                      {c.category} · {c.frequency}
+                      {c.category} · {formatFrequency(c.frequency, null, null)}
                     </span>
                   </div>
                   {c.is_archived ? (
@@ -406,13 +406,13 @@ export default function ChoresTab() {
             setCreating(false)
             setEditing(null)
           }}
-          onSave={async (input, assignTo, dow) => {
+          onSave={async (input, assignTo, dow, week) => {
             if (editing) {
               await updateChore(editing.id, input)
             } else if (familyId && activeMember) {
               const chore = await createChore(familyId, input)
               if (assignTo.length > 0) {
-                await assignChoreToMembers(chore.id, assignTo, activeMember.id, dow)
+                await assignChoreToMembers(chore.id, assignTo, activeMember.id, dow, week)
               }
             }
             setCreating(false)
@@ -431,8 +431,8 @@ export default function ChoresTab() {
             .filter((r) => r.chore_id === assigning.id)
             .map((r) => r.assigned_to)}
           onClose={() => setAssigning(null)}
-          onAssign={async (memberIds, dow) => {
-            await assignChoreToMembers(assigning.id, memberIds, activeMember.id, dow)
+          onAssign={async (memberIds, dow, week) => {
+            await assignChoreToMembers(assigning.id, memberIds, activeMember.id, dow, week)
             setAssigning(null)
             await load()
           }}
@@ -491,7 +491,7 @@ function RosterCard({
   currency,
   busy,
   onToggle,
-  onDay,
+  onSchedule,
   onRemove,
 }: {
   child: FamilyMember
@@ -499,7 +499,7 @@ function RosterCard({
   currency: string
   busy: string | null
   onToggle: (entry: RosterEntry) => void
-  onDay: (entry: RosterEntry, dow: number | null) => void
+  onSchedule: (entry: RosterEntry, dow: number | null, week: number | null) => void
   onRemove: (entry: RosterEntry) => void
 }) {
   const [confirmRemove, setConfirmRemove] = useState<RosterEntry | null>(null)
@@ -524,8 +524,8 @@ function RosterCard({
       ) : (
         <div className="flex flex-col gap-2">
           {sorted.map((e) => {
-            const isWeekly = e.chore?.frequency === 'weekly'
-            const day = dayLabel(e.recurrence_dow)
+            const freq = e.chore?.frequency ?? 'daily'
+            const pinnable = freq === 'weekly' || freq === 'monthly'
             return (
               <div
                 key={e.id}
@@ -550,8 +550,8 @@ function RosterCard({
                       )}
                     </div>
                     <div className="text-xs text-text-muted">
-                      {formatCurrency(e.chore?.value ?? 0, currency)} · {e.chore?.frequency}
-                      {isWeekly && day && ` · ${day}s`}
+                      {formatCurrency(e.chore?.value ?? 0, currency)} ·{' '}
+                      {formatFrequency(freq, e.recurrence_dow, e.recurrence_week)}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -583,26 +583,28 @@ function RosterCard({
                   </div>
                 </div>
 
-                {isWeekly && (
-                  <label className="mt-2 flex items-center gap-2 text-xs text-text-muted">
-                    <CalendarClock className="h-4 w-4 shrink-0" />
-                    <span className="shrink-0">Due on</span>
-                    <select
-                      value={e.recurrence_dow ?? ''}
+                {pinnable && (
+                  <div className="mt-2">
+                    <div className="mb-1.5 flex items-center gap-2 text-xs text-text-muted">
+                      <CalendarClock className="h-4 w-4 shrink-0" />
+                      <span>Due on</span>
+                    </div>
+                    {/* Clearable here, and only here. A roster entry may be
+                        legitimately unpinned — that is the original behaviour
+                        and 100+ existing entries rely on it — so tapping the
+                        selected pill returns it to end-of-period. The create
+                        modal is not clearable: a NEW pinned chore should be
+                        deliberate. */}
+                    <SchedulePicker
+                      frequency={freq}
+                      dow={e.recurrence_dow}
+                      week={e.recurrence_week}
+                      clearable
                       disabled={busy === e.id}
-                      onChange={(ev) =>
-                        onDay(e, ev.target.value === '' ? null : Number(ev.target.value))
-                      }
-                      className="min-h-touch flex-1 rounded-input border border-line bg-deep px-2 text-sm text-text focus:border-antique focus:outline-none"
-                    >
-                      <option value="">End of week</option>
-                      {DAY_LABELS.map((label, dow) => (
-                        <option key={label} value={dow}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      onChange={({ dow, week }) => onSchedule(e, dow, week)}
+                      hint={scheduleHint(freq, e.recurrence_dow, e.recurrence_week)}
+                    />
+                  </div>
                 )}
               </div>
             )
@@ -700,31 +702,59 @@ function ChildPicker({
   )
 }
 
-function DayPicker({
-  value,
-  onChange,
-}: {
-  value: number | null
-  onChange: (dow: number | null) => void
-}) {
-  return (
-    <div>
-      <label className="text-sm text-text-muted">Day of the week</label>
-      <select
-        value={value ?? ''}
-        onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        className={cn(inputClass, 'min-h-touch')}
-      >
-        <option value="">Any day (due end of week)</option>
-        {DAY_LABELS.map((label, dow) => (
-          <option key={label} value={dow}>
-            {label}
-          </option>
-        ))}
-      </select>
-    </div>
-  )
+/**
+ * States the effective schedule in words under the pills. An unpinned entry
+ * has no selected pill, so without this line the row would show nothing at all
+ * and read as broken rather than as "due end of period".
+ */
+function scheduleHint(freq: string, dow: number | null, week: number | null): string {
+  if (freq === 'weekly') {
+    return dow === null ? 'No day picked — due end of week.' : 'Tap again to clear.'
+  }
+  if (freq === 'monthly') {
+    return dow === null || week === null
+      ? 'Needs a week and a day — due end of month until both are set.'
+      : 'Tap again to clear.'
+  }
+  return ''
 }
+
+/**
+ * Save is blocked until a pinnable chore has a complete schedule — but only
+ * when roster entries are actually being created. With no child selected there
+ * is no assignment row to carry a pin, so requiring one would block creating a
+ * library-only chore for no reason.
+ */
+function scheduleBlockReason(
+  freq: string,
+  assigning: boolean,
+  dow: number | null,
+  week: number | null
+): string | null {
+  if (!assigning) return null
+  if (freq === 'weekly' && dow === null) return 'Select which day of the week'
+  if (freq === 'monthly' && (dow === null || week === null)) {
+    return 'Select which week and which day'
+  }
+  return null
+}
+
+/**
+ * Why the schedule pills are NOT in the edit half of ChoreFormModal, despite
+ * being in the create half:
+ *
+ * recurrence_dow and recurrence_week live on chore_assignments, not on chores.
+ * A library chore has no single schedule — the same chore can sit on POCO's
+ * roster pinned to Wednesday and on Cuddles' pinned to Saturday. Editing "the
+ * chore's day" is not a thing that exists, and showing one value would have to
+ * pick a child's arbitrarily and then overwrite the other's on save.
+ *
+ * The create path CAN offer it because it creates the roster entries in the
+ * same action, so there is exactly one schedule being set. Afterwards the pins
+ * are edited per child on the roster rows above, which pre-select their stored
+ * values — the same control, the same pre-population, at the level the data
+ * actually lives.
+ */
 
 function AssignModal({
   chore,
@@ -739,18 +769,24 @@ function AssignModal({
   currency: string
   alreadyAssigned: string[]
   onClose: () => void
-  onAssign: (memberIds: string[], dow: number | null) => Promise<void>
+  onAssign: (memberIds: string[], dow: number | null, week: number | null) => Promise<void>
 }) {
   const [selected, setSelected] = useState<string[]>([])
   const [dow, setDow] = useState<number | null>(null)
+  const [week, setWeek] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
-  const isWeekly = chore.frequency === 'weekly'
+  const freq = chore.frequency ?? 'daily'
+  const blockReason = scheduleBlockReason(freq, selected.length > 0, dow, week)
 
   async function submit() {
-    if (selected.length === 0) return
+    if (selected.length === 0 || blockReason) return
     setBusy(true)
     try {
-      await onAssign(selected, isWeekly ? dow : null)
+      await onAssign(
+        selected,
+        freq === 'weekly' || freq === 'monthly' ? dow : null,
+        freq === 'monthly' ? week : null
+      )
     } finally {
       setBusy(false)
     }
@@ -760,8 +796,8 @@ function AssignModal({
     <Modal open onClose={onClose} title={`Assign "${chore.title}"`}>
       <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto">
         <p className="text-sm text-text-muted">
-          {chore.frequency} · {formatCurrency(chore.value, currency)} · each child selected gets their
-          own roster entry.
+          {formatFrequency(freq, dow, week)} · {formatCurrency(chore.value, currency)} · each child
+          selected gets their own roster entry.
         </p>
         <ChildPicker
           kids={kids}
@@ -769,12 +805,21 @@ function AssignModal({
           disabledIds={alreadyAssigned}
           onChange={setSelected}
         />
-        {isWeekly && <DayPicker value={dow} onChange={setDow} />}
+        <SchedulePicker
+          frequency={freq}
+          dow={dow}
+          week={week}
+          onChange={(next) => {
+            setDow(next.dow)
+            setWeek(next.week)
+          }}
+        />
+        {blockReason && <p className="text-xs text-danger">{blockReason}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={busy || selected.length === 0}>
+          <Button onClick={submit} disabled={busy || selected.length === 0 || !!blockReason}>
             {busy
               ? 'Assigning…'
               : selected.length > 1
@@ -856,7 +901,12 @@ function ChoreFormModal({
   chore: Chore | null
   kids: FamilyMember[]
   onClose: () => void
-  onSave: (input: ChoreInput, assignTo: string[], dow: number | null) => Promise<void>
+  onSave: (
+    input: ChoreInput,
+    assignTo: string[],
+    dow: number | null,
+    week: number | null
+  ) => Promise<void>
 }) {
   const [title, setTitle] = useState(chore?.title ?? '')
   const [description, setDescription] = useState(chore?.description ?? '')
@@ -865,11 +915,16 @@ function ChoreFormModal({
   const [category, setCategory] = useState(chore?.category ?? 'household')
   const [assignTo, setAssignTo] = useState<string[]>([])
   const [dow, setDow] = useState<number | null>(null)
+  const [week, setWeek] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const isNew = !chore
+  // Only the create path assigns, so only it can require a schedule.
+  const blockReason = isNew
+    ? scheduleBlockReason(frequency, assignTo.length > 0, dow, week)
+    : null
 
   async function submit() {
-    if (!title.trim()) return
+    if (!title.trim() || blockReason) return
     setBusy(true)
     try {
       await onSave(
@@ -881,7 +936,8 @@ function ChoreFormModal({
           category,
         },
         isNew ? assignTo : [],
-        frequency === 'weekly' ? dow : null
+        frequency === 'weekly' || frequency === 'monthly' ? dow : null,
+        frequency === 'monthly' ? week : null
       )
     } finally {
       setBusy(false)
@@ -954,9 +1010,18 @@ function ChoreFormModal({
                 <ChildPicker kids={kids} selected={assignTo} onChange={setAssignTo} />
               </div>
             </div>
-            {frequency === 'weekly' && assignTo.length > 0 && (
-              <DayPicker value={dow} onChange={setDow} />
+            {assignTo.length > 0 && (
+              <SchedulePicker
+                frequency={frequency}
+                dow={dow}
+                week={week}
+                onChange={(next) => {
+                  setDow(next.dow)
+                  setWeek(next.week)
+                }}
+              />
             )}
+            {blockReason && <p className="text-xs text-danger">{blockReason}</p>}
           </>
         )}
 
@@ -964,7 +1029,7 @@ function ChoreFormModal({
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={busy || !title.trim()}>
+          <Button onClick={submit} disabled={busy || !title.trim() || !!blockReason}>
             {busy ? 'Saving…' : 'Save'}
           </Button>
         </div>

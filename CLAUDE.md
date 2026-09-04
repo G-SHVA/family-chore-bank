@@ -397,6 +397,71 @@ same rows — a 10c gap, likely one approved chore_assignment whose joined
 chore has a null or changed value. Low priority, unrelated to the truncation
 bug. Do not chase without a reason.
 
+## Weekly and monthly scheduling — generation logic
+
+nextDueDate() in choreService decides WHEN a template's next instance falls due,
+or returns null to skip this pass.
+
+  once     -> end of today, generated exactly once ever
+  daily    -> end of today
+  weekly   + recurrence_dow  -> weeklyDueDate(): this week's occurrence of that
+              weekday, at end of day; NULL once that day has passed
+  monthly  + recurrence_week + recurrence_dow -> monthlyDueDate(): this month's
+              Nth occurrence of that weekday, at end of day; NULL once passed
+  anything unpinned -> end of its period (unchanged, pre-existing behaviour)
+
+GENERATED ON ANY PASS IN THE PERIOD, DATED TO THE PINNED DAY. Deliberately NOT
+"only generate if today IS the pinned day". Generation is PARENT-DASHBOARD ONLY
+and rate-limited, so a day-gated rule would mean that if no parent opened the
+dashboard on Wednesday, a Wednesday chore silently never generated that week —
+no error, no row, nothing to notice. Generating on any pass during the period
+means Monday, Tuesday or Wednesday all produce it, due end of Wednesday.
+
+NULL WHEN PASSED, NEVER ROLLED FORWARD. Both pinned helpers return null rather
+than next period's date. Rolling forward would leave a pending instance on the
+child's dashboard for up to a full month showing a due date weeks away —
+isActionable() treats a future-dated pending row as live. The opportunity window
+closed; a new one opens next period, exactly as a missed weekly chore behaves.
+
+nthWeekdayOfMonth() anchors at NOON before endOfDay() reads the civil date back
+off it. A DST transition can move local midnight; noon is never within an hour
+of one, so the date cannot slip a day. All date maths goes through lib/time and
+resolves in the FAMILY's zone — no timezone literal is introduced.
+
+DEDUP IS UNCHANGED AND NEEDED NO CHANGE. periodWindow(freq, due) returns the
+calendar month containing a monthly chore's due date, so a 2nd-Wednesday chore
+dedupes against the whole month exactly as an end-of-month chore always did.
+idx_ca_daily_dedup buckets by the local day of due_date, and every instance of
+one template in a period shares one due_date, so concurrent passes still
+collide into one row. NOTE the division of labour: the index is scoped to
+pending/in_progress, so once a chore is completed or approved the row LEAVES the
+index — the client-side existence check, which reads with NO status filter, is
+what stops mid-period regeneration. Both layers are load-bearing, in opposite
+directions.
+
+VERIFIED LIVE 2026-09-04 (a Friday): a weekly chore pinned to Wednesday produced
+ZERO instances (Wed Sept 2 had passed), and a monthly chore pinned to the 2nd
+Wednesday produced exactly ONE, due 2026-09-09 23:59:59.999 America/Chicago
+(2026-09-10 04:59:59.999 UTC) — confirmed by Postgres to be a Wednesday.
+
+### formatFrequency() — the single source of truth for frequency display
+
+choreService exports formatFrequency(frequency, recurrence_dow, recurrence_week).
+Every place the app prints a frequency goes through it: roster list, chore
+library, claim library, child chore cards, the child Chores tab, Quick Add, and
+the parent request pill. NO component formats a frequency itself — a grep for
+`.frequency}` in src/ returns nothing, and that is the check to re-run.
+
+  unpinned                    -> "Daily" / "Weekly" / "Monthly" / "Once"
+  weekly + dow                -> "Weekly — Wed"
+  monthly + week + dow        -> "Monthly — 2nd Wed"
+
+An INSTANCE row carries no pin — only the template does — so child-facing chore
+cards render the bare frequency. That is correct rather than a gap: the card
+already shows a concrete due date, and reading the pin there would cost a join
+on the most-opened screen in the app, which the child dashboard query budget
+forbids.
+
 ## Known schema notes (verified against live DB)
 - family_members has NO current_streak / longest_streak columns — streaks
   are derived from chore_assignments history, not stored.
@@ -428,6 +493,32 @@ bug. Do not chase without a reason.
   deleting the template row is permanent and can't be resumed.
 - chore_assignments.recurrence_dow — smallint 0=Sun..6=Sat, pins a weekly chore
   to a weekday. Null = due end of week. Only meaningful on template rows.
+- chore_assignments.recurrence_week — smallint 1..4, added 2026-09-04. Pins a
+  MONTHLY chore to an Nth weekday, paired with recurrence_dow: week=2, dow=3 is
+  the 2nd Wednesday. Null = unpinned (weekly chores, and monthly chores due end
+  of month). Only meaningful on template rows.
+  TWO EXPLICIT COLUMNS, NOT AN ENCODING. The alternative considered was packing
+  both into recurrence_dow as (week * 10) + day. It was rejected because it is
+  NOT schema-change-free as it first appears: the live
+  chore_assignments_recurrence_dow_check caps that column at 6, so storing 23
+  would have meant dropping a constraint and permanently losing its ability to
+  validate a weekday — while also making the column's meaning conditional on
+  chores.frequency, a column in a DIFFERENT table.
+  THE 1-4 CAP IS ARITHMETIC, NOT CONVENTION. Every month has at least 28 days,
+  and 1 + 6 + (4-1)*7 = 28, so the 4th occurrence of any weekday always exists.
+  A 5th does not reliably exist — September 2026 has five Wednesdays
+  (2, 9, 16, 23, 30) but most months do not — so allowing week=5 would silently
+  skip generation in most months. The constraint prevents that class of silent
+  omission. Do not widen it to 5 without adding a "last weekday" fallback.
+  MIRRORED onto chore_assignments_archive and both column lists inside
+  archive_old_assignments(), per the mirror invariant in the archive section.
+- SCHEDULE PINS LIVE ON chore_assignments, NOT chores. The same library chore
+  can be pinned to Wednesday on one child's roster and Saturday on another's.
+  So the schedule picker appears in the chore CREATE modal (which creates the
+  roster entries in the same action, so there is exactly one schedule being
+  set) and on each ROSTER ROW — never in the library chore EDIT modal, where
+  there is no single value to show and saving would overwrite one child's
+  schedule with another's. Edit a schedule on the roster row.
 - status allows 'expired'. Missed chores do NOT carry over: the sweep in
   expireLapsedAssignments() flips lapsed pending/in_progress instances to
   'expired' and a fresh instance generates next period. 'rejected' is left alone
@@ -774,7 +865,16 @@ deleting the chore. Unintentional, but correct.
   strength of a dev session.
 
 ## Kiosk rules
-- All touch targets minimum 64px
+- All touch targets minimum 64px, EXCEPT parent-facing actions that repeat down
+  a list, which use Button `size="lgResponsive"` — `h-11` (44px, the
+  Apple/Google minimum) on a phone and `h-16` (64px) from `md:` up. Applied
+  2026-09-04 to the three approval buttons (Full Credit / Half / No Credit):
+  three stacked 64px buttons per row cost a third of a phone screen, which is
+  how the approvals queue read on Eve's phone. The wall tablet is md and above,
+  so the kiosk is unaffected. Verified 44px at 375px, 64px at 1920px.
+  It is a Button SIZE rather than a className override because cn() is a plain
+  join with no tailwind-merge — passing `h-11` alongside `min-h-touch` leaves
+  both in the class list and stylesheet order decides, not the caller.
 - Support both landscape and portrait
 - Bottom nav on child views
 - Large readable text — minimum 16px, balance at 48px+
@@ -870,6 +970,63 @@ tap -> assert it registered. Test with a target OUTSIDE the dialog's footprint
 
 ## Known layout traps
 
+### SHRINK-0 TRAP — any component in a `flex flex-col` overflow container
+
+Any card or component placed in a `flex flex-col` container that overflows MUST
+carry `shrink-0` on its ROOT element, or it is silently squashed toward zero
+height. No error, no warning, no console message — it simply renders wrong, or
+not at all.
+
+TWO EVIDENCED INSTANCES:
+1. Child dashboard left column cards (2026-09-02) — CharacterMomentBanner
+   rendered as a ~30px sliver with its headline sliced through the middle.
+2. SchedulePicker in the chore create modal (2026-09-04) — the modal body is
+   `flex max-h-[70vh] flex-col overflow-y-auto`, and the picker's wrapper
+   computed to height 0 while its inline style still read `height: auto`. The
+   seven day pills existed at full size and were clipped to nothing, so a
+   REQUIRED form control was invisible while its validation message and Save
+   gating both worked correctly — the bug was undetectable from state alone.
+
+RULE: when adding a new component to a `flex flex-col` scroll container, put
+`shrink-0` on its root as the FIRST thing, not after discovering it is
+invisible. It belongs on the component's own root when the component is the
+flex child — putting it on an inner wrapper does nothing.
+
+### HEIGHT ANIMATION TRAP — never let an animation own the resting state
+
+framer-motion `height: 0 -> auto` animations may never advance in a backgrounded
+tab, because Chrome throttles requestAnimationFrame there. The element then
+stays permanently collapsed with its inline style reading `height: 0px`, which
+for a required control means it is simply missing.
+
+Use a CSS `grid-template-rows: 0fr -> 1fr` transition instead. `1fr` is the
+plain, cascade-applied resting state, so the control is OPEN even if the
+transition never runs; the animation becomes progressive enhancement rather than
+the thing that produces a correct layout. The collapsed child needs
+`overflow-hidden` for the fr row to clip it, and its focusable elements must be
+`disabled` while collapsed so they stay out of the tab order.
+
+Applied 2026-09-04 in src/components/shared/SchedulePicker.tsx, which no longer
+imports framer-motion at all.
+
+RULE: any animation whose RESTING state is "hidden" or "collapsed" is only
+correct when the animation actually runs. Invert it so the correct state is the
+default.
+
+### VERIFICATION — getComputedStyle lies in a backgrounded tab
+
+In a backgrounded tab getComputedStyle() returns STALE values. During the
+2026-09-04 session it reported a selected pill's background as transparent and
+its text as muted grey, while a screenshot of the same element showed it
+correctly filled antique gold with dark text — nearly costing a cycle chasing a
+CSS specificity bug that did not exist.
+
+SCREENSHOTS ARE THE RELIABLE SIGNAL for visual verification. Do not chase a CSS
+bug on the strength of computed-style readings from a tab that has been in the
+background. Check `document.hidden` before trusting any computed style. The same
+caveat applies to elements captured into a variable across a React re-render —
+a detached node returns default computed values.
+
 ### Child dashboard left column — every card needs `shrink-0`
 
 The child Dashboard's left column is a height-constrained, independently
@@ -930,6 +1087,11 @@ warn you it has gone stale.
   makes a small roster workable — but the roster itself is still 85 entries.
   Shipping the feature did not reduce it. See "ROSTER MANAGEMENT" below for the
   recommended reduction.
+  DONE 2026-09-04: Eve performed the reduction. The roster is now 16 ACTIVE
+  entries across both children (132 paused), down from 85. Pausing rather than
+  deleting kept every generated instance and left the paused chores claimable,
+  which is exactly the intended end state. This checklist item is CLOSED;
+  re-read Family Week System Health to measure the effect.
 
 - TRUNCATION CLASS INSTANCE 5 — getTransactionHistory (child My Bank ledger)
   still issues two UNBOUNDED selects and derives the running balance from the
@@ -1137,6 +1299,22 @@ becomes something a child can choose.
 
 Re-read the Family Week System Health section afterwards; it is the instrument
 that measures whether the reduction worked.
+
+## SHIPPED 2026-09-04 — weekly and monthly day-of-week scheduling
+
+Weekly day-of-week pinning already EXISTED in the generator (weeklyDueDate) but
+was reachable only from a <select> on the roster row — never from the chore
+create modal. Monthly had no pinning at all: nextDueDate had no monthly branch
+and fell through to end-of-month, reading recurrence_dow but ignoring it.
+
+Shipped: recurrence_week column, monthlyDueDate/nthWeekdayOfMonth, one shared
+SchedulePicker replacing BOTH old <select> pickers, formatFrequency as the
+single display source of truth, and responsive approval buttons. Verified 14/14
+against live family data; both test chores removed afterwards and
+chore_assignments returned to its exact pre-session count of 1,786 rows.
+
+Migrations: 20260904123546_add_recurrence_week_to_chore_assignments,
+20260904124019_mirror_recurrence_week_onto_assignments_archive.
 
 ## NEXT FEATURE — none currently queued
 

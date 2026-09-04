@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { isLapsed, type AssignmentWithChore } from '@/features/chores/choreService'
+import { formatFrequency, isLapsed, type AssignmentWithChore } from '@/features/chores/choreService'
 import { Button } from '@/components/ui/Button'
 import { cn, formatCurrency } from '@/lib/utils'
 
@@ -81,7 +81,13 @@ export function ChoreCard({ assignment, currency = 'USD', onComplete }: ChoreCar
           </div>
           <div className="label-caps mt-2 flex items-center gap-2 text-[11px] text-text-muted">
             <span>{chore?.category ?? 'chore'}</span>
-            {chore?.frequency && <span>· {chore.frequency}</span>}
+            {/* An INSTANCE row carries no recurrence pin — only the template
+                does — so this renders the bare frequency. That is deliberate:
+                the card already shows a concrete due date, and repeating
+                "Weekly — Wed" on the day itself would say nothing new. Reading
+                the pin here would cost a join on the most-opened screen in the
+                app, which the child dashboard query budget forbids. */}
+            {chore?.frequency && <span>· {formatFrequency(chore.frequency, null, null)}</span>}
           </div>
 
           <div className="mt-4">

@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
  * affirmative action uses `accent`, which is antique gold.
  */
 type Variant = 'primary' | 'primaryList' | 'accent' | 'secondary' | 'ghost' | 'danger'
-type Size = 'md' | 'lg' | 'xl'
+type Size = 'md' | 'lg' | 'lgResponsive' | 'xl'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant
@@ -29,10 +29,21 @@ const variantClasses: Record<Variant, string> = {
   danger: 'bg-transparent text-danger border border-danger/40 hover:bg-danger/10',
 }
 
-// All sizes meet the 64px kiosk touch-target minimum.
+// Every size except lgResponsive meets the 64px kiosk touch-target minimum.
 const sizeClasses: Record<Size, string> = {
   md: 'min-h-touch px-5 text-sm',
   lg: 'min-h-touch px-6 text-base',
+  // 44px on a phone — the Apple/Google minimum — and the full 64px kiosk
+  // target from md up. For a frequent PARENT action that repeats down a list:
+  // three stacked 64px buttons per row cost a third of a phone screen, which
+  // is how the approvals queue read on Eve's phone. The wall tablet is md and
+  // above, so it is unaffected.
+  //
+  // This exists as a size rather than a className override because cn() is a
+  // plain join with no tailwind-merge — passing `h-11` alongside `min-h-touch`
+  // leaves both in the class list and the stylesheet order decides, not the
+  // caller.
+  lgResponsive: 'h-11 px-3 text-sm md:h-16 md:px-6 md:text-base',
   xl: 'min-h-[72px] px-8 text-lg',
 }
 

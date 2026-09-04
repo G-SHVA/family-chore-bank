@@ -6,6 +6,7 @@ import {
   getClaimableChores,
   createOneTimeRequest,
   createRosterRequest,
+  formatFrequency,
   type ClaimGroup,
 } from '@/features/chores/choreService'
 import type { Chore } from '@/lib/supabase'
@@ -51,16 +52,12 @@ function categoryLabel(category: string): string {
   return CATEGORY_LABELS[category] ?? category.replace(/-/g, ' ')
 }
 
-const FREQUENCY_LABELS: Record<string, string> = {
-  once: 'Once',
-  daily: 'Daily',
-  weekly: 'Weekly',
-  monthly: 'Monthly',
-}
-
-function frequencyLabel(frequency: string | null | undefined): string {
-  return FREQUENCY_LABELS[frequency ?? 'daily'] ?? 'Daily'
-}
+/**
+ * A claimable chore is a LIBRARY row, so it carries no recurrence pin — those
+ * live on the roster assignment. formatFrequency therefore renders the bare
+ * frequency here, which is correct: the child is choosing a chore, not being
+ * shown someone else's schedule for it.
+ */
 
 /**
  * A one-time chore cannot become a recurring roster entry — there is nothing
@@ -205,7 +202,7 @@ export default function ChildClaim() {
                       <span className="min-w-0">
                         <span className="block truncate text-base text-text">{chore.title}</span>
                         <span className="label-caps mt-1 block text-[10px] text-text-muted">
-                          {frequencyLabel(chore.frequency)}
+                          {formatFrequency(chore.frequency, null, null)}
                         </span>
                       </span>
                       {requested ? (
@@ -243,7 +240,7 @@ export default function ChildClaim() {
                 {formatCurrency(selected.value ?? 0, currency)}
               </div>
               <div className="label-caps mt-1 text-[10px] text-text-muted">
-                {frequencyLabel(selected.frequency)}
+                {formatFrequency(selected.frequency, null, null)}
               </div>
             </div>
 

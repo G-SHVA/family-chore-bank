@@ -20,6 +20,7 @@ import {
   getChoreRequests,
   approveChoreRequest,
   declineChoreRequest,
+  formatFrequency,
   type ChoreRequest,
   type ChoreRequestQueue,
   type PendingApproval,
@@ -307,24 +308,23 @@ export default function ParentDashboard() {
                           </div>
                         </div>
                       </div>
-                      {/* Three outcomes, all visible — never a dropdown. This
-                          is a frequent tablet action, so each is its own 64px
-                          target. Gold outline / antique outline / red outline
-                          reads as a descending scale of approval at a glance. */}
+                      {/* Three outcomes, all visible — never a dropdown. Gold
+                          outline / antique outline / red outline reads as a
+                          descending scale of approval at a glance.
+                          size="lgResponsive": 44px on Eve's phone, the full
+                          64px kiosk target on the wall tablet. */}
                       <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-3">
                         <Button
-                          size="lg"
+                          size="lgResponsive"
                           variant="primaryList"
-                          className="px-3"
                           onClick={() => handleApprove(a)}
                           disabled={busyId === a.id}
                         >
                           <Check className="h-5 w-5 shrink-0" /> Full Credit
                         </Button>
                         <Button
-                          size="lg"
+                          size="lgResponsive"
                           variant="accent"
-                          className="px-3"
                           onClick={() => handleHalfCredit(a)}
                           disabled={busyId === a.id}
                           title="Completed after a second reminder"
@@ -336,9 +336,8 @@ export default function ParentDashboard() {
                           Half ({formatCurrency(halfCreditAmount(a), currency)})
                         </Button>
                         <Button
-                          size="lg"
+                          size="lgResponsive"
                           variant="danger"
-                          className="px-3"
                           onClick={() => setRejecting(a)}
                           disabled={busyId === a.id}
                           title="Completed only after multiple reminders"
@@ -804,7 +803,9 @@ function QuickAdd({
             </span>
           </div>
         ) : (
-          <div className="mt-0.5">This is a {selectedChore.frequency} chore.</div>
+          <div className="mt-0.5">
+            This is a {formatFrequency(selectedChore.frequency, null, null).toLowerCase()} chore.
+          </div>
         )}
       </div>
     ) : null
@@ -1161,7 +1162,8 @@ function QuickAdd({
               {mode === 'chore'
                 ? chores.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.title} · {formatCurrency(c.value, currency)} · {c.frequency}
+                      {c.title} · {formatCurrency(c.value, currency)} ·{' '}
+                      {formatFrequency(c.frequency, null, null)}
                     </option>
                   ))
                 : expenses.map((e) => (
@@ -1307,7 +1309,9 @@ function RequestRow({
               {formatCurrency(request.chore?.value ?? 0, currency)}
             </span>
             {showFrequency && request.chore?.frequency && (
-              <span className="label-caps ml-2 text-[10px]">{request.chore.frequency}</span>
+              <span className="label-caps ml-2 text-[10px]">
+                {formatFrequency(request.chore.frequency, request.recurrence_dow, request.recurrence_week)}
+              </span>
             )}
           </div>
           <div className="mt-0.5 text-sm text-text-muted">{blurb}</div>
