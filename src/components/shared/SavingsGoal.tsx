@@ -13,6 +13,9 @@ import {
   weeksToGoal,
   type SavingsRate,
 } from '@/features/goals/goalService'
+import { getPlanChores, keepPlanChores, retirePlanChores, type PlanChore } from '@/features/goals/planService'
+import { PlanBuilder } from '@/components/shared/PlanBuilder'
+import { PlanSection } from '@/components/shared/PlanSection'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
@@ -72,6 +75,30 @@ export function SavingsGoalSection({
   /** Synchronous guard: a re-render must not fire a second achieve write. */
   const completing = useRef<Set<string>>(new Set())
 
+  /**
+   * The active goal's plan chores.
+   *
+   * Loaded LAZILY — only when the goal modal opens, or at the moment a goal is
+   * achieved. The compact Home row shows no plan information, so the child
+   * dashboard (documented 2-read budget) pays nothing for this feature on a
+   * normal load.
+   */
+  const [planChores, setPlanChores] = useState<PlanChore[]>([])
+  const [buildingPlan, setBuildingPlan] = useState(false)
+
+  const loadPlan = useCallback(
+    async (goalId: string) => {
+      try {
+        setPlanChores(await getPlanChores(memberId, goalId))
+      } catch {
+        // A plan that will not load must not block the goal modal — the goal
+        // itself is the primary content and still works.
+        setPlanChores([])
+      }
+    },
+    [memberId]
+  )
+
   const load = useCallback(async () => {
     try {
       setError(null)
@@ -89,6 +116,13 @@ export function SavingsGoalSection({
     void load()
   }, [load])
 
+  // The plan is fetched on OPEN, not on mount: this is the read the child
+  // dashboard would otherwise pay for on every load.
+  useEffect(() => {
+    if (!editing || !goal) return
+    void loadPlan(goal.id)
+  }, [editing, goal, loadPlan])
+
   // Auto-complete the first time the balance crosses the target, on load.
   useEffect(() => {
     if (!goal || goal.target_amount <= 0 || balance < goal.target_amount) return
@@ -98,6 +132,10 @@ export function SavingsGoalSection({
     void (async () => {
       try {
         await markGoalAchieved(reached.id)
+        // Fetch the plan HERE rather than on every dashboard load: the Keep /
+        // Done choice needs to know whether one exists, and this moment happens
+        // once per goal in its lifetime.
+        await loadPlan(reached.id)
         setJustAchieved(reached)
         setGoal(null)
       } catch (e) {
@@ -107,7 +145,7 @@ export function SavingsGoalSection({
         setError(e instanceof Error ? e.message : 'Could not complete your goal.')
       }
     })()
-  }, [goal, balance])
+  }, [goal, balance, loadPlan])
 
   if (loading) {
     return (
@@ -133,6 +171,19 @@ export function SavingsGoalSection({
         <GoalAchievedCard
           goal={justAchieved}
           currency={currency}
+          hasPlan={planChores.length > 0}
+          onKeepPlan={async () => {
+            await keepPlanChores(memberId, justAchieved.id)
+            setPlanChores([])
+            setJustAchieved(null)
+            void load()
+          }}
+          onRetirePlan={async () => {
+            await retirePlanChores(memberId, justAchieved.id)
+            setPlanChores([])
+            setJustAchieved(null)
+            void load()
+          }}
           onDone={() => {
             setJustAchieved(null)
             void load()
@@ -240,9 +291,30 @@ export function SavingsGoalSection({
           goal and immediately tapped "Set a savings goal" got the edit form for
           the goal they had just dropped. Staying open through the write also
           keeps the button's "Saving…" state honest. */}
+      {goal && (
+        <PlanBuilder
+          open={buildingPlan}
+          goal={goal}
+          memberId={memberId}
+          familyId={familyId}
+          balance={balance}
+          rate={rate}
+          currency={currency}
+          onClose={() => setBuildingPlan(false)}
+          onLocked={async () => {
+            await loadPlan(goal.id)
+          }}
+        />
+      )}
+
       <GoalModal
         open={editing}
         goal={goal}
+        planChores={planChores}
+        onBuildPlan={() => {
+          setEditing(false)
+          setBuildingPlan(true)
+        }}
         rate={rate}
         balance={balance}
         currency={currency}
@@ -255,7 +327,7 @@ export function SavingsGoalSection({
         }}
         onAbandon={async () => {
           if (!goal) return
-          await abandonGoal(goal.id)
+          await abandonGoal(goal.id, memberId)
           await load()
           setEditing(false)
         }}
@@ -329,12 +401,32 @@ export function GoalRing({
 function GoalAchievedCard({
   goal,
   currency,
+  hasPlan,
+  onKeepPlan,
+  onRetirePlan,
   onDone,
 }: {
   goal: Milestone
   currency: string
+  /** Whether this goal had a plan whose chores now need a decision. */
+  hasPlan: boolean
+  onKeepPlan: () => Promise<void>
+  onRetirePlan: () => Promise<void>
   onDone: () => void
 }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function run(fn: () => Promise<void>) {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'That did not work.')
+      setBusy(false)
+    }
+  }
   return (
     <Card className="flex flex-col items-center gap-3 py-6 text-center">
       <div className="relative flex items-center justify-center">
@@ -352,9 +444,35 @@ function GoalAchievedCard({
           You saved {formatCurrency(goal.target_amount, currency)}
         </div>
       </motion.div>
-      <Button variant="accent" size="lg" onClick={onDone} className="mt-1">
-        Set a new goal
-      </Button>
+      {/* With a plan, the child owns what happens to the chores they chose.
+          Without one, the original single button is unchanged. */}
+      {hasPlan ? (
+        <div className="mt-1 flex w-full flex-col gap-2">
+          <Button
+            variant="primary"
+            fullWidth
+            size="lg"
+            disabled={busy}
+            onClick={() => run(onKeepPlan)}
+          >
+            Keep my plan chores
+          </Button>
+          <Button
+            variant="secondary"
+            fullWidth
+            size="lg"
+            disabled={busy}
+            onClick={() => run(onRetirePlan)}
+          >
+            I&rsquo;m done with these chores
+          </Button>
+          {error && <p className="text-center text-base text-danger">{error}</p>}
+        </div>
+      ) : (
+        <Button variant="accent" size="lg" onClick={onDone} className="mt-1">
+          Set a new goal
+        </Button>
+      )}
     </Card>
   )
 }
@@ -397,6 +515,8 @@ function GoalModal({
   rate,
   balance,
   currency,
+  planChores,
+  onBuildPlan,
   onClose,
   onSave,
   onAbandon,
@@ -407,6 +527,8 @@ function GoalModal({
   rate: SavingsRate
   balance: number
   currency: string
+  planChores: PlanChore[]
+  onBuildPlan: () => void
   onClose: () => void
   onSave: (title: string, target: number) => Promise<void>
   onAbandon: () => Promise<void>
@@ -539,6 +661,19 @@ function GoalModal({
           {busy ? 'Saving…' : goal ? 'Save changes' : 'Save goal'}
         </Button>
         {blockReason && <p className="text-center text-base text-text-muted">{blockReason}</p>}
+
+        {/* My Plan — below the goal details, above the lifecycle actions. A
+            plan only exists for a goal that exists. */}
+        {goal && (
+          <PlanSection
+            goal={goal}
+            planChores={planChores}
+            balance={balance}
+            rate={rate}
+            currency={currency}
+            onBuild={onBuildPlan}
+          />
+        )}
 
         {goal && (
           <div className="flex flex-col gap-2 border-t border-line pt-4">

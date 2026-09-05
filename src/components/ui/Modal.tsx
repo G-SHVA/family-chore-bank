@@ -10,10 +10,18 @@ interface ModalProps {
   title?: string
   /** Hide the close button (e.g. forced PIN entry). */
   hideClose?: boolean
+  /**
+   * Panel width. A SIZE PROP, not a className, for the reason CLAUDE.md records
+   * about Button: cn() is a plain join with no tailwind-merge, so passing
+   * `max-w-2xl` alongside the built-in `max-w-md` leaves BOTH in the class list
+   * and stylesheet order decides — measured 2026-09-05, the panel stayed 448px
+   * and the override silently did nothing. Only one max-w class may be emitted.
+   */
+  size?: 'default' | 'wide'
   className?: string
 }
 
-export function Modal({ open, onClose, children, title, hideClose, className }: ModalProps) {
+export function Modal({ open, onClose, children, title, hideClose, size = 'default', className }: ModalProps) {
   return (
     <AnimatePresence>
       {open && (
@@ -48,7 +56,8 @@ export function Modal({ open, onClose, children, title, hideClose, className }: 
             aria-modal="true"
             aria-label={title}
             className={cn(
-              'relative z-10 w-full max-w-md rounded-card border border-line bg-card p-6 shadow-2xl',
+              'relative z-10 w-full rounded-card border border-line bg-card p-6 shadow-2xl',
+              size === 'wide' ? 'max-w-2xl' : 'max-w-md',
               className
             )}
             initial={{ scale: 0.94, y: 16, opacity: 0 }}

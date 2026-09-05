@@ -28,6 +28,7 @@ export type Database = {
           is_active: boolean
           is_template: boolean
           notes: string | null
+          plan_goal_id: string | null
           recurrence_dow: number | null
           recurrence_week: number | null
           status: string | null
@@ -46,6 +47,7 @@ export type Database = {
           is_active?: boolean
           is_template?: boolean
           notes?: string | null
+          plan_goal_id?: string | null
           recurrence_dow?: number | null
           recurrence_week?: number | null
           status?: string | null
@@ -64,6 +66,7 @@ export type Database = {
           is_active?: boolean
           is_template?: boolean
           notes?: string | null
+          plan_goal_id?: string | null
           recurrence_dow?: number | null
           recurrence_week?: number | null
           status?: string | null
@@ -98,6 +101,13 @@ export type Database = {
             referencedRelation: "chores"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "chore_assignments_plan_goal_id_fkey"
+            columns: ["plan_goal_id"]
+            isOneToOne: false
+            referencedRelation: "milestones"
+            referencedColumns: ["id"]
+          },
         ]
       }
       chore_assignments_archive: {
@@ -114,6 +124,7 @@ export type Database = {
           is_active: boolean
           is_template: boolean
           notes: string | null
+          plan_goal_id: string | null
           recurrence_dow: number | null
           recurrence_week: number | null
           status: string | null
@@ -132,6 +143,7 @@ export type Database = {
           is_active?: boolean
           is_template?: boolean
           notes?: string | null
+          plan_goal_id?: string | null
           recurrence_dow?: number | null
           recurrence_week?: number | null
           status?: string | null
@@ -150,6 +162,7 @@ export type Database = {
           is_active?: boolean
           is_template?: boolean
           notes?: string | null
+          plan_goal_id?: string | null
           recurrence_dow?: number | null
           recurrence_week?: number | null
           status?: string | null

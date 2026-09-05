@@ -196,6 +196,81 @@ export async function expireLapsedAssignments(now: Date = new Date()): Promise<n
 }
 
 /**
+ * How long an achieved goal waits for the child to choose Keep or Done.
+ *
+ * Declared here rather than imported from planService: that module already
+ * imports weeklyValueOf from this one, and a cycle between two service files is
+ * exactly the kind of fragility this codebase avoids. planService re-exports
+ * the same constant for its own callers; the two are asserted equal by a test
+ * of the only thing that matters — both read 7.
+ */
+export const PLAN_CHOICE_GRACE_DAYS = 7
+
+/**
+ * Stands down Goal Plan chores whose goal is finished with.
+ *
+ * TWO CASES, one sweep:
+ *   achieved > 7 days ago — the child never chose Keep or Done, so the plan
+ *     falls back to Done. Keyed on the goal's achieved_at, NOT on when the plan
+ *     was built: plan age would fire the instant a goal built more than a week
+ *     earlier was reached, killing the chores before the child ever saw the
+ *     celebration.
+ *   abandoned — a backstop. abandonGoal() already retires the plan immediately,
+ *     because abandonment is a deliberate act and not a timeout; this catches
+ *     the row if that second statement ever failed.
+ *
+ * A row still CARRYING a link is by definition an unanswered plan: both Keep
+ * and Done clear plan_goal_id. So no extra column is needed to tell "the child
+ * chose" from "the child has not chosen yet".
+ *
+ * LIVES HERE, next to expireLapsedAssignments, and runs from the same place.
+ * Generation is what would otherwise keep creating instances for these chores,
+ * so standing them down is that pass's own business — and putting it on the
+ * child dashboard instead would have cost a read on the most-opened screen in
+ * the app, against the query budget in CLAUDE.md.
+ *
+ * Two bounded reads rather than a subquery: PostgREST cannot express one inline.
+ */
+export async function retireLapsedPlanChores(now: Date = new Date()): Promise<number> {
+  const graceCutoff = new Date(
+    now.getTime() - PLAN_CHOICE_GRACE_DAYS * 24 * 60 * 60 * 1000
+  ).toISOString()
+
+  // Bounded by status: 'achieved' and 'abandoned' goals are a handful per
+  // family and do not grow with chore history.
+  const [lapsed, abandoned] = await Promise.all([
+    supabase
+      .from('milestones')
+      .select('id')
+      .eq('child_initiated', true)
+      .eq('status', 'achieved')
+      .lt('achieved_at', graceCutoff)
+      .limit(500),
+    supabase
+      .from('milestones')
+      .select('id')
+      .eq('child_initiated', true)
+      .eq('status', 'abandoned')
+      .limit(500),
+  ])
+  if (lapsed.error) throw lapsed.error
+  if (abandoned.error) throw abandoned.error
+
+  const goalIds = [...(lapsed.data ?? []), ...(abandoned.data ?? [])].map((g) => g.id)
+  if (goalIds.length === 0) return 0
+
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .update({ is_active: false, plan_goal_id: null })
+    .eq('is_template', true)
+    .eq('is_active', true)
+    .in('plan_goal_id', goalIds)
+    .select('id')
+  if (error) throw error
+  return data?.length ?? 0
+}
+
+/**
  * Whether an instance's due date has already passed.
  *
  * Compared against NOW, not the start of the day: a roster instance's due_date
@@ -294,6 +369,10 @@ const PERIOD_FETCH_LIMIT = 2000
 async function runGeneration(now: Date): Promise<number> {
   // Retire anything that lapsed before generating this period's fresh set.
   await expireLapsedAssignments(now)
+  // And stand down Goal Plan chores whose goal is finished with, BEFORE the
+  // template read below — otherwise this pass would generate one more day of
+  // instances for a plan that is already over.
+  await retireLapsedPlanChores(now)
 
   const { data: templates, error } = await supabase
     .from('chore_assignments')
@@ -703,6 +782,11 @@ async function getLifetimeCounts(memberId: string): Promise<{ total: number; don
  */
 export interface CharacterMoment {
   id: string
+  /**
+   * Which of the three recognitions this is, so the banner picks its icon and
+   * wording without re-deriving anything from the category string.
+   */
+  type: RecognitionCategory
   /** What the parent typed — the throwaway chore row's title. */
   description: string
   amount: number
@@ -734,12 +818,17 @@ function deriveCharacterMoments(
   return approved
     .filter(
       (r) =>
-        r.chore?.category === CHARACTER_MOMENT_CATEGORY &&
+        // All three recognitions, not just Character Moment. Same rows, same
+        // window, same query — Earner of the Week and Strategic Saver ride the
+        // identical award path and differ only in this marker, so widening the
+        // match is the whole of the child-facing change and costs no read.
+        RECOGNITION_CATEGORIES.includes(r.chore?.category ?? '') &&
         r.approved_at !== null &&
         new Date(r.approved_at).getTime() >= cutoff
     )
     .map((r) => ({
       id: r.id,
+      type: (r.chore?.category ?? CHARACTER_MOMENT_CATEGORY) as RecognitionCategory,
       description: r.chore?.title ?? 'Something great',
       amount: r.chore?.value ?? 0,
       approvedAt: r.approved_at as string,
@@ -1128,6 +1217,20 @@ export const DIRECT_AWARD_CATEGORY = 'direct-award'
 export const CHARACTER_MOMENT_CATEGORY = 'character-moment'
 
 /**
+ * The other two recognitions the book names in Chapter 8, alongside the
+ * Character Champion that CHARACTER_MOMENT_CATEGORY already carries.
+ *
+ * Each is its own marker category rather than a `kind` column on a shared one,
+ * for exactly the reason CHARACTER_MOMENT_CATEGORY is separate from
+ * 'direct-award': the category IS the discriminator the child dashboard matches
+ * on to raise the right banner, and it already flows through every read the
+ * feature needs. A column would have meant a schema change to say something the
+ * existing string already says.
+ */
+export const EARNER_OF_WEEK_CATEGORY = 'earner-of-week'
+export const STRATEGIC_SAVER_CATEGORY = 'strategic-saver'
+
+/**
  * Categories that exist only so a balance trigger has a row to read a value
  * from. None of them is a library chore, and getFamilyChores — the single door
  * every library view goes through, archived views included — excludes all of
@@ -1136,7 +1239,99 @@ export const CHARACTER_MOMENT_CATEGORY = 'character-moment'
 export const RESERVED_CHORE_CATEGORIES = [
   DIRECT_AWARD_CATEGORY,
   CHARACTER_MOMENT_CATEGORY,
+  EARNER_OF_WEEK_CATEGORY,
+  STRATEGIC_SAVER_CATEGORY,
 ] as const
+
+/** The three recognition markers, narrowed out of the reserved set. */
+export type RecognitionCategory =
+  | typeof CHARACTER_MOMENT_CATEGORY
+  | typeof EARNER_OF_WEEK_CATEGORY
+  | typeof STRATEGIC_SAVER_CATEGORY
+
+/**
+ * Everything that differs between the three recognitions, in ONE place.
+ *
+ * Quick Add reads the defaults, the child banner reads the copy, and Family
+ * Week reads the label — so a fourth recognition is one entry here plus an icon
+ * in the two components, not a hunt through three screens. Same reasoning as
+ * formatFrequency(): where a value is displayed in more than one place, the
+ * codebase keeps exactly one source for it.
+ *
+ * Icons deliberately live in the components. A service file must not import
+ * React, and Lucide components are React.
+ *
+ * The amounts are DEFAULTS, not prices. Every one stays editable, the way
+ * Character Moment's $0.25 always has been.
+ */
+export const RECOGNITION_TYPES = [
+  {
+    category: CHARACTER_MOMENT_CATEGORY,
+    label: 'Character Moment',
+    /** Empty: the parent describes what they saw. The other two are named awards. */
+    defaultTitle: '',
+    /** The book's value for "Get Caught Serving the Family". */
+    defaultAmount: '0.25',
+    prompt: 'Recognize a moment of character — no chore required.',
+    titleLabel: 'What did they do?',
+    titlePlaceholder: 'e.g. Helped their sibling without being asked',
+    notePlaceholder: 'e.g. Nobody asked — they just saw it needed doing',
+  },
+  {
+    category: EARNER_OF_WEEK_CATEGORY,
+    label: 'Earner of the Week',
+    defaultTitle: 'Earner of the Week',
+    defaultAmount: '1.00',
+    prompt: 'Recognize exceptional effort or improvement this week.',
+    titleLabel: 'Recognition',
+    titlePlaceholder: 'Earner of the Week',
+    notePlaceholder: 'e.g. Finished every chore three days running',
+  },
+  {
+    category: STRATEGIC_SAVER_CATEGORY,
+    label: 'Strategic Saver',
+    defaultTitle: 'Strategic Saver',
+    defaultAmount: '0.50',
+    prompt: 'Recognize impressive planning and delayed gratification.',
+    titleLabel: 'Recognition',
+    titlePlaceholder: 'Strategic Saver',
+    notePlaceholder: 'e.g. Chose to save instead of spending on a whim',
+  },
+] as const
+
+/**
+ * How many times a chore of each frequency comes round in a week.
+ *
+ * Promoted out of ChoresTab.tsx on 2026-09-05, where it was component-local,
+ * because the Goal Plan builder needs the identical answer. A chore's `value`
+ * is per OCCURRENCE, so a $0.25 DAILY chore is $1.75 a week — and 60 of this
+ * family's 73 claimable chores are daily. Summing raw values would have
+ * understated a child's plan by 7x and told them their goal was 23 weeks away
+ * when it was 3.
+ *
+ * `once: 0` is correct rather than lazy: this converts to a RECURRING weekly
+ * rate, and a one-off chore contributes to no week but the one it happens in.
+ * `monthly: 0.25` is the same approximation ChoresTab has always used.
+ */
+export const WEEKLY_MULTIPLIER: Record<string, number> = {
+  daily: 7,
+  weekly: 1,
+  monthly: 0.25,
+  once: 0,
+}
+
+/** What one chore is worth per week, given its frequency. */
+export function weeklyValueOf(chore: { value?: number | null; frequency?: string | null }): number {
+  return (chore.value ?? 0) * (WEEKLY_MULTIPLIER[chore.frequency ?? 'once'] ?? 0)
+}
+
+/** Config lookup for one recognition category. Never undefined for a valid one. */
+export function recognitionType(category: RecognitionCategory) {
+  return RECOGNITION_TYPES.find((t) => t.category === category) ?? RECOGNITION_TYPES[0]
+}
+
+/** The three markers as a plain array, for a `.includes()` membership test. */
+const RECOGNITION_CATEGORIES: readonly string[] = RECOGNITION_TYPES.map((t) => t.category)
 
 /**
  * Supabase rejects with a PostgrestError — a plain object, NOT an Error — so a
@@ -1578,6 +1773,12 @@ export async function unarchiveChore(choreId: string): Promise<void> {
 export interface RosterEntry extends ChoreAssignment {
   chore: Chore | null
   member: PendingMember | null
+  /**
+   * The savings goal this entry was added to serve, when a child built it as
+   * part of a Goal Plan. Null for an ordinary roster entry — and null again
+   * once the child chooses Keep or Done, since both clear the link.
+   */
+  plan_goal: { title: string } | null
 }
 
 /** All roster templates (is_template=true) across the family, with chore + child. */
@@ -1585,7 +1786,9 @@ export async function getRoster(): Promise<RosterEntry[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
     .select(
-      '*, chore:chores(*), member:family_members!chore_assignments_assigned_to_fkey(id,display_name,avatar_url)'
+      // plan_goal rides the FK added with the column, so the parent roster can
+      // label a plan chore without a second query.
+      '*, chore:chores(*), member:family_members!chore_assignments_assigned_to_fkey(id,display_name,avatar_url), plan_goal:milestones!chore_assignments_plan_goal_id_fkey(title)'
     )
     .eq('is_template', true)
     // Excludes unapproved Path 2 claim requests. Without this a child's

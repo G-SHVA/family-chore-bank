@@ -1,12 +1,60 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Flame, Loader2 } from 'lucide-react'
+import { AlertTriangle, ChevronRight, Flame, Loader2, PiggyBank, Sparkles, Trophy } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getActiveMembers, isChild } from '@/features/family/familyService'
 import { getFamilyWeek, type FamilyWeekData } from '@/features/familyweek/familyWeekService'
+import {
+  CHARACTER_MOMENT_CATEGORY,
+  EARNER_OF_WEEK_CATEGORY,
+  STRATEGIC_SAVER_CATEGORY,
+  recognitionType,
+  type RecognitionCategory,
+} from '@/features/chores/choreService'
 import { Card } from '@/components/ui/Card'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { formatCurrency } from '@/lib/utils'
+
+/**
+ * Icon and label per recognition. The parent-facing counterpart to the child
+ * banner's RECOGNITION_LOOK — same icons, so a child pointing at their Trophy
+ * and a parent reading the meeting screen are looking at the same mark.
+ */
+const RECOGNITION_LOOK: Record<RecognitionCategory, { icon: LucideIcon; label: string }> = {
+  [CHARACTER_MOMENT_CATEGORY]: { icon: Sparkles, label: 'Character Moment' },
+  [EARNER_OF_WEEK_CATEGORY]: { icon: Trophy, label: 'Earner of the Week' },
+  [STRATEGIC_SAVER_CATEGORY]: { icon: PiggyBank, label: 'Strategic Saver' },
+}
+
+/**
+ * "Give Recognition" — the meeting's natural next step, not a call to action.
+ *
+ * RECOGNITION IS MANUAL BY DESIGN. Nothing in this app awards Earner of the
+ * Week automatically, and it must not: the book's agenda has the family discuss
+ * the week's earnings FIRST and the parent recognise someone AFTER that
+ * conversation. An automatic award would skip the discussion, which is the
+ * actual lesson. This link exists to make that sequence seamless — review,
+ * discuss, tap once — rather than to prompt an award.
+ *
+ * Styled as a text link with an antique chevron, matching "Browse available
+ * chores" on the child dashboard. Deliberately NOT a button: on a screen being
+ * read aloud to children, a prominent control invites a tap from the wrong
+ * person.
+ */
+function GiveRecognitionLink() {
+  return (
+    <div className="mt-3 flex justify-end">
+      <Link
+        to="/parent/dashboard?quickAdd=character"
+        className="label-caps flex min-h-touch shrink-0 items-center gap-2 text-[11px] text-antique hover:text-gold"
+      >
+        Give Recognition
+        <ChevronRight className="h-4 w-4" />
+      </Link>
+    </div>
+  )
+}
 
 /**
  * Family Week — the screen a parent opens on Friday night and turns toward the
@@ -15,7 +63,9 @@ import { formatCurrency } from '@/lib/utils'
  * READ ONLY, by design. No approve, no assign, no edit. Every other parent
  * screen is a console; this one is a document being read aloud to children, and
  * an action button within reach of a child leaning over the tablet is a way to
- * lose money mid-conversation. The single link out is to the approval queue.
+ * lose money mid-conversation. Nothing here writes: the two links out (the
+ * approval queue, and Give Recognition) both navigate to the parent dashboard,
+ * where the actual money-moving controls live.
  *
  * Sized for arm's length in landscape: no displayed figure is below 18px, and
  * the conversation starters are deliberately the largest text on the page
@@ -35,7 +85,10 @@ export default function FamilyWeek() {
     try {
       setError(null)
       const members = await getActiveMembers(familyId)
-      setData(await getFamilyWeek(familyId, members.filter(isChild)))
+      // Full member list as well as the children: a recognition names the
+      // parent who gave it, and resolving that here costs nothing because
+      // these rows are already loaded.
+      setData(await getFamilyWeek(familyId, members.filter(isChild), new Date(), members))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load this week.')
     } finally {
@@ -163,7 +216,61 @@ export default function FamilyWeek() {
         </div>
       </section>
 
-      {/* Section 3 — Conversation Starters */}
+      {/* Section 3 — This Week's Recognition. Hidden entirely when none were
+          given, the same way Loan History is: an empty "no recognitions this
+          week" card read aloud at the meeting is a reproach, not information.
+
+          Placed BEFORE Conversation Starters deliberately — a recognition is
+          the warmest thing on the page and belongs in the part being read to
+          the children, not filed after the questions. */}
+      {data.recognitions.length > 0 && (
+        <section>
+          <h2 className="mb-4 text-2xl">This Week&rsquo;s Recognition</h2>
+          <Card className="flex flex-col divide-y divide-line">
+            {data.recognitions.map((r) => {
+              const look = RECOGNITION_LOOK[r.type] ?? RECOGNITION_LOOK[CHARACTER_MOMENT_CATEGORY]
+              const Icon = look.icon
+              return (
+                <div key={r.id} className="flex items-start gap-4 py-4 first:pt-0 last:pb-0">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-input border border-antique/40 text-antique">
+                    <Icon className="h-5 w-5" strokeWidth={1.5} />
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <p className="display text-2xl leading-tight text-text">
+                      {r.childName} — <span className="text-antique">{look.label}</span>
+                    </p>
+                    {/* A named award's description is its own title, which the
+                        line above just said. Only a parent's own words show. */}
+                    {r.description !== recognitionType(r.type).defaultTitle && (
+                      <p className="mt-1 text-lg leading-snug text-text">{r.description}</p>
+                    )}
+                    {r.note && (
+                      <p className="mt-1 text-base italic text-text-muted">{r.note}</p>
+                    )}
+                    <p className="label-caps mt-2 text-[11px] text-text-muted">
+                      {r.awardedBy ? `Given by ${r.awardedBy}` : 'Given by a parent'}
+                    </p>
+                  </div>
+
+                  <div className="display shrink-0 text-2xl text-green">
+                    {formatCurrency(r.amount, currency)}
+                  </div>
+                </div>
+              )
+            })}
+          </Card>
+          <GiveRecognitionLink />
+        </section>
+      )}
+
+      {/* When no recognition has been given yet the section above is hidden, so
+          the link still needs a home — the meeting is exactly when a parent
+          decides to give the first one. It follows the earnings cards here,
+          which is where the conversation that prompts it happens. */}
+      {data.recognitions.length === 0 && <GiveRecognitionLink />}
+
+      {/* Section 4 — Conversation Starters */}
       <section>
         <h2 className="mb-4 text-2xl">Conversation Starters</h2>
         <Card className="flex flex-col gap-5">
@@ -175,7 +282,7 @@ export default function FamilyWeek() {
         </Card>
       </section>
 
-      {/* Section 4 — System Health, collapsed. Not meeting material: this is
+      {/* Section 5 — System Health, collapsed. Not meeting material: this is
           for the parent afterwards, and reading "completion rate 19%" aloud to
           a child turns a review into a performance appraisal. */}
       <CollapsibleSection title="System Health" maxHeight={420}>

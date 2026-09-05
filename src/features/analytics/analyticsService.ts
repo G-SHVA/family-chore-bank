@@ -111,6 +111,10 @@ interface AssignmentRow {
   completed_at: string | null
   approved_at: string | null
   template_id: string | null
+  /** The parent's optional note — Family Week prints it on a recognition. */
+  notes: string | null
+  /** Who awarded it. Resolved to a name client-side, never joined here. */
+  assigned_by: string | null
   chore: { title: string | null; value: number; category: string | null } | null
 }
 
@@ -122,8 +126,14 @@ interface ExpenseRow {
   expense: { title: string | null; category: string | null } | null
 }
 
+// `notes` and `assigned_by` are SCALARS, deliberately — no embedded join was
+// added for the awarding parent's name. This query is paged and runs on every
+// Analytics and Family Week load; resolving assigned_by against the member list
+// the app already holds in memory costs nothing, where a join would cost a
+// lookup per row forever. Both columns exist on chore_assignments_archive too,
+// so the All Time union still reads.
 const ASSIGNMENT_COLUMNS =
-  'id, assigned_to, status, due_date, completed_at, approved_at, template_id, chore:chores(title, value, category)'
+  'id, assigned_to, status, due_date, completed_at, approved_at, template_id, notes, assigned_by, chore:chores(title, value, category)'
 
 /**
  * Statuses that represent a *resolved* chore — one whose outcome is known.

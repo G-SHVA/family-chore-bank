@@ -31,6 +31,7 @@ import {
   removeRosterEntry,
   dailyRosterTotal,
   formatFrequency,
+  weeklyValueOf,
   type ChoreInput,
   type ChoreUsage,
   type RosterEntry,
@@ -46,8 +47,6 @@ import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { SchedulePicker } from '@/components/shared/SchedulePicker'
 import { cn, formatCurrency } from '@/lib/utils'
 import { formatDateInZone } from '@/lib/time'
-
-const WEEKLY_MULTIPLIER: Record<string, number> = { daily: 7, weekly: 1, monthly: 0.25, once: 0 }
 
 const inputClass =
   'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
@@ -117,8 +116,7 @@ export default function ChoresTab() {
   const potentialWeekly = useMemo(
     () =>
       activeRoster.reduce(
-        (sum, r) =>
-          sum + (r.chore?.value ?? 0) * (WEEKLY_MULTIPLIER[r.chore?.frequency ?? 'once'] ?? 0),
+        (sum, r) => sum + weeklyValueOf(r.chore ?? {}),
         0
       ),
     [activeRoster]
@@ -553,6 +551,16 @@ function RosterCard({
                       {formatCurrency(e.chore?.value ?? 0, currency)} ·{' '}
                       {formatFrequency(freq, e.recurrence_dow, e.recurrence_week)}
                     </div>
+                    {/* Goal Plan provenance. Unobtrusive but present: a parent
+                        seeing a chore they never assigned should be able to tell
+                        at a glance that the child added it to reach a goal. The
+                        pause and delete controls beside it are unrestricted —
+                        a plan is the child's, but the roster is the parent's. */}
+                    {e.plan_goal && (
+                      <div className="mt-0.5 text-[11px] italic text-text-muted">
+                        {child.display_name}&rsquo;s Plan — {e.plan_goal.title}
+                      </div>
+                    )}
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <button

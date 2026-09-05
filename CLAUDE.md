@@ -512,6 +512,15 @@ forbids.
   omission. Do not widen it to 5 without adding a "last weekday" fallback.
   MIRRORED onto chore_assignments_archive and both column lists inside
   archive_old_assignments(), per the mirror invariant in the archive section.
+- chore_assignments.plan_goal_id — uuid FK to milestones(id), added 2026-09-05.
+  Links a roster entry to the savings goal a child built it to serve (Goal
+  Plan). NULL = an ordinary roster entry. Only meaningful on template rows, and
+  buildInstance() deliberately does NOT copy it onto instances. BOTH Phase 6
+  choices clear it, so a row that still carries a link is by definition an
+  unanswered plan — that is the entire signal retireLapsedPlanChores() uses.
+  Mirrored onto chore_assignments_archive and both column lists inside
+  archive_old_assignments(), per the mirror invariant. See "SCHEMA FACTS — GOAL
+  PLAN" below for the full account.
 - SCHEDULE PINS LIVE ON chore_assignments, NOT chores. The same library chore
   can be pinned to Wednesday on one child's roster and Saturday on another's.
   So the schedule picker appears in the chore CREATE modal (which creates the
@@ -1316,6 +1325,280 @@ chore_assignments returned to its exact pre-session count of 1,786 rows.
 Migrations: 20260904123546_add_recurrence_week_to_chore_assignments,
 20260904124019_mirror_recurrence_week_onto_assignments_archive.
 
+## SHIPPED 2026-09-05 — Goal Plan, and three recognitions
+
+Two features, 34/34 checks verified against live family data. Balances opened
+and closed at POCO $11.92 / Cuddles $14.00 with $0.00 ledger variance on both.
+
+### SCHEMA FACTS — GOAL PLAN (added 2026-09-05)
+
+A Goal Plan is a set of roster entries a child chose in order to reach their
+savings goal faster. THE WHOLE FEATURE IS ONE NULLABLE COLUMN:
+
+    chore_assignments.plan_goal_id uuid REFERENCES milestones(id) ON DELETE SET NULL
+
+NO goal_plans TABLE, AND THE REJECTION IS THE DESIGN. The proposed table carried
+weekly_target, target_weeks, status and completed_at. Six of its eight columns
+were either derivable from rows already read or a second copy of something
+milestones already stores:
+
+    weekly_target -> SUM of the plan chores' weekly value, computed at read time
+    target_weeks  -> ceil(needed / rate), computed at read time
+    status        -> milestones.status; a plan's life IS its goal's life
+    completed_at  -> milestones.achieved_at
+    member_id     -> chore_assignments.assigned_to
+    family_id     -> derivable via the chore or the member
+
+Storing the first two would have been ACTIVELY WRONG, not merely redundant. A
+parent may pause or delete a plan chore at any time — the feature explicitly
+permits it — and a stored weekly_target has no way to notice, so the child would
+read a total that no longer matched the chores under it. Same doctrine as
+"PROGRESS IS NEVER STORED" for goals.
+
+ONE ACTIVE PLAN PER CHILD COMES FREE. idx_milestones_one_active_goal already
+guarantees one active goal per child and a plan hangs off a goal, so there is no
+new partial unique index and no 23505 to translate — unlike goalService and
+loanService, which each needed both.
+
+Migrations: 20260905182252_add_plan_goal_id_to_chore_assignments,
+20260905182302_mirror_plan_goal_id_in_archive_old_assignments.
+The archive mirror is not optional — archive_old_assignments() moves rows with
+explicit column lists and fails at runtime on a count mismatch (16 -> 17).
+
+#### THE SIGNAL: linked = unanswered, cleared = resolved
+
+BOTH Phase 6 choices clear plan_goal_id. "Keep my plan chores" clears it and
+leaves the rows ACTIVE (they become ordinary permanent roster entries); "I'm
+done with these chores" clears it and sets is_active = false (a reused template
+lands back exactly where the parent left it — paused).
+
+THIS IS WHAT MAKES THE 7-DAY SWEEP WORK WITHOUT A NEW COLUMN. A row that STILL
+CARRIES A LINK is, by definition, a plan nobody has answered yet.
+retireLapsedPlanChores() needs no other signal to tell "the child chose" from
+"the child has not chosen", and no boolean is stored anywhere to say so.
+
+DO NOT "FIX" THIS BY RETAINING THE LINK FOR HISTORY. It was proposed twice
+during the build and rejected both times. Retaining it would make the sweep
+unable to distinguish the two states, and it would keep re-deactivating
+already-retired rows.
+
+#### retireLapsedPlanChores() — lives in choreService, runs in runGeneration
+
+Called from runGeneration() immediately after expireLapsedAssignments() and
+BEFORE the template read, so a pass cannot generate one more day of instances
+for a plan that is already over. Handles two cases: a goal achieved more than
+PLAN_CHOICE_GRACE_DAYS (7) ago, and any abandoned goal (a backstop — abandonGoal
+retires the plan immediately, because abandonment is a deliberate act and not a
+timeout).
+
+KEYED ON milestones.achieved_at, NEVER on when the plan was built. Plan age
+would fire the instant a goal built more than a week earlier was reached,
+killing the chores before the child ever saw the celebration.
+
+IT DOES NOT RUN ON THE CHILD DASHBOARD, deliberately. That screen has a
+documented 2-read budget and detecting a lapsed plan needs a read getActiveGoal
+does not make. Generation is what would otherwise keep creating these instances,
+so standing them down is that pass's own business.
+
+PLAN_CHOICE_GRACE_DAYS is declared in choreService and RE-EXPORTED by
+planService. One declaration only — planService already imports weeklyValueOf
+from choreService, so declaring it there instead would make a cycle.
+
+#### lockInPlan() — three cases, and paused-template reuse is the dominant one
+
+One bounded lookup for the whole selection (is_template + IN, so it reads roster
+rows only and never competes with instance history), then:
+
+    paused template exists -> REUSE it (is_active = true, plan_goal_id set)
+    active template exists -> SKIP entirely
+    nothing exists         -> INSERT a fresh template
+
+REUSE IS THE NORMAL PATH FOR ANY FAMILY THAT HAS DONE A ROSTER REDUCTION, and
+this one has. After Eve's 2026-09-04 reduction POCO held 67 paused templates
+against 6 active, and getClaimableChores() does not exclude paused entries — so
+the claim library the builder reads is mostly his own paused rows.
+
+MEASURED LIVE 2026-09-05, locking in three chores:
+  POCO templates      73 -> 73   (ZERO new rows)
+  whole table       1802 -> 1802 (ZERO new rows)
+  active templates     6 -> 9
+The three template_ids after lock-in were byte-identical to the paused rows
+recorded before it. A plan can cost nothing at all.
+
+Inserting instead would leave TWO templates for one (chore, child). They carry
+different template_ids, so idx_ca_daily_dedup cannot collide them, and the child
+would silently receive the chore twice a day if a parent ever un-paused the
+original.
+
+THE SKIP CASE is only reachable as a race — door 2 of getClaimableChores
+excludes active roster chores, so a parent would have to un-pause one between
+the builder opening and the tap. Claiming it anyway would let a later "I'm done"
+pause a chore the parent deliberately made mandatory, and it is already earning
+toward the same goal.
+
+REUSED ROWS KEEP THEIR ORIGINAL assigned_by. The spec called plan chores
+self-initiated, but overwriting would erase the record that a parent first
+assigned the chore, and plan_goal_id already marks the row as plan-driven.
+
+NOT TRANSACTIONAL, deliberately: two statements, so a mid-write failure leaves a
+PARTIAL plan. Safe here precisely because nothing is stored — the weekly total
+is summed from the chores that actually exist, so a partial plan renders a
+correct total for itself rather than a stale figure describing chores that were
+never created.
+
+INSTANCES DO NOT INHERIT plan_goal_id. buildInstance() copies chore_id,
+assigned_to, assigned_by, status, is_template, template_id and due_date only.
+The column is meaningful on template rows alone, so ANY verification query
+against instances must join through template_id — filtering instances on
+plan_goal_id returns zero rows whether or not generation worked.
+
+#### THE RATE DISTINCTION — two rates, both correct, do not reconcile them
+
+    Plan builder     -> (existingWeeklyRate + planWeeklyTotal)
+    Progress tracker -> existingWeeklyRate ALONE
+
+getWeeklySavingsRate() filters on `template_id IS NOT NULL`, and a locked-in
+plan chore IS a roster template. Its instances therefore enter that average as
+soon as they are approved, and nothing in the query distinguishes them from the
+child's pre-existing chores — so the plan's contribution cannot be subtracted
+back out. Adding planWeeklyTotal in the TRACKER double-counts it, and the
+overstatement GROWS as the plan succeeds: the child would repeatedly be told the
+goal is nearer than it is.
+
+In the BUILDER the plan chores do not exist yet, so projection is the only
+honest option and the existing roster is genuinely additional.
+
+OBSERVED LIVE 2026-09-05, the same plan on two screens: builder "about 2 weeks"
+(combined $17.29/wk), tracker "About 3 weeks to go at what you're earning now"
+(measured $7.84/wk). Both correct for the question each is answering. The full
+note is in goalService above getWeeklySavingsRate.
+
+#### WEEKLY_MULTIPLIER — promoted, and it is load-bearing
+
+A chore's `value` is PER OCCURRENCE, so a $0.25 daily chore is $1.75 a week.
+60 of this family's 73 claimable chores are daily. Summing raw values would have
+understated a plan by 7x and told a child their goal was 23 weeks away when it
+was 3. WEEKLY_MULTIPLIER (daily 7, weekly 1, monthly 0.25, once 0) and
+weeklyValueOf() now live in choreService; ChoresTab imports them instead of
+keeping its own copy.
+
+#### The celebration reuses GoalAchievedCard — intentional, and better
+
+The spec asked for a full-screen takeover reading "You did it!" / "$35.00
+reached". Shipped instead: the EXISTING inline card in the child's left column,
+reading "GOAL REACHED" / "New headphones" / "You saved $35.00", with the two
+plan buttons added beneath.
+
+Deliberate on both counts. The left column is where the goal lives all the time,
+so the celebration belongs there rather than in a takeover the child has to
+dismiss. And "You saved $35.00" is concrete where "You did it!" is vague — for a
+five-year-old the specific figure is the reward. The 12-ray Burst was already in
+that component; no new animation was written.
+
+The plan chores are fetched at the ACHIEVEMENT MOMENT and on modal open, never
+on dashboard load, so the child dashboard's 2-read budget is untouched.
+
+### SCHEMA FACTS — THE THREE RECOGNITIONS (added 2026-09-05)
+
+Chapter 8 names three weekly recognitions. Character Champion already existed as
+'character-moment'; 'earner-of-week' ($1.00 default) and 'strategic-saver'
+($0.50 default) join it. Both are in RESERVED_CHORE_CATEGORIES, so getFamilyChores
+excludes them from every library view automatically — verified 0 rows.
+
+EACH IS ITS OWN MARKER CATEGORY, not a `kind` column on a shared one, for the
+same reason 'character-moment' is separate from 'direct-award': the category IS
+the discriminator the child dashboard matches on, and it already flows through
+every read the feature needs. A column would have been a schema change to say
+what the existing string already says.
+
+RECOGNITION_TYPES in choreService is the single source of truth for categories,
+default amounts, prompts and placeholders — the formatFrequency pattern. Icons
+live in the components, because a service file must not import React.
+
+The award path is directAwardCustom() UNCHANGED. No new backend code.
+
+A named award's DESCRIPTION IS ITS OWN TITLE, which the banner headline already
+says, so the child banner and Family Week both suppress it unless the parent
+typed something of their own. Character Moment always carries a real description
+and is unaffected.
+
+#### The recognition TYPE persists after submit — intentional
+
+Submitting keeps the selected pill and refills that type's defaults, clearing
+only the note. Naming an Earner of the Week usually means naming one per child
+at the Friday meeting, and re-picking the pill between each is friction with no
+payoff. Switching TABS still resets to Character Moment, so a parent returning
+to the tab finds it in the state it has always opened in.
+
+#### RECOGNITION IS MANUAL, AND MUST STAY MANUAL
+
+Nothing awards Earner of the Week automatically. The book's agenda has the
+family discuss the week's earnings FIRST and the parent recognise someone AFTER
+that conversation; an automatic award would skip the discussion, which is the
+actual lesson. Family Week carries a "Give Recognition ->" text link (antique,
+chevron, matching "Browse available chores") that deep-links to
+/parent/dashboard?quickAdd=character with the tab pre-selected — to make that
+sequence seamless, NOT to prompt an award. It is a link rather than a button
+because a prominent control on a screen read aloud to children invites a tap
+from the wrong person.
+
+The Quick Add tab strip scrolls horizontally and Caught Being Great is the LAST
+tab, so the deep link also scrolls the active tab into view. Correct content
+under a tab bar showing a different tab reads as a bug.
+
+Family Week is still READ ONLY — it now has TWO links out (the approval queue
+and Give Recognition), both of which navigate to the parent dashboard where the
+money-moving controls actually live. Nothing on that screen writes.
+
+#### FIXED WHILE HERE — "Biggest win" counted awards
+
+familyWeekService's topChore loop had no category filter, so a recognition or a
+Direct Award could become a child's headline achievement of the week — an
+Earner of the Week award winning the "Biggest win" slot in the very week it
+celebrates. RESERVED_CHORE_CATEGORIES are now excluded, the same reasoning as
+rosterInstancesOnly() on the streak path.
+
+PROVEN, not merely present: on 2026-09-05 Cuddles' highest-value approved row of
+the week was her $0.50 Strategic Saver and her top real chore was $0.25. Family
+Week showed "Feed & Water Dog $0.25".
+
+#### Family Week recognitions cost ZERO new reads
+
+Derived from approvedThisWeek, already fetched. ASSIGNMENT_COLUMNS gained
+`notes` and `assigned_by` as SCALARS — no embedded join for the awarding
+parent's name, which is resolved against the member list the page already holds.
+This query is paged and runs on every Analytics and Family Week load; a join
+would have cost a lookup per row forever. Both columns exist on
+chore_assignments_archive, so the All Time union still reads.
+
+### FIXED 2026-09-05 — Modal size must be a PROP, never a className
+
+PlanBuilder passed `className="max-w-2xl"` to widen the modal for its two-column
+tile grid. MEASURED: the panel stayed 448px. cn() is a plain join with no
+tailwind-merge, so `max-w-md` and `max-w-2xl` both sat in the class list and
+stylesheet order decided. Modal now takes `size?: 'default' | 'wide'` and emits
+exactly one max-w class — the same remedy already recorded for Button sizes.
+
+Also caught in the same pass: `bg-panel` is NOT a token in tailwind.config.ts.
+It emits nothing, which would have left the builder's sticky header and footer
+transparent with tiles scrolling behind them. The Modal panel is `bg-card`.
+RULE: before using a colour class, check it exists in the config — an invented
+token fails silently and looks like a z-index bug.
+
+### Verification note — a snapshot taken too late proves nothing
+
+During check 27 the plan-instance count read 46 before AND after a parent
+dashboard load, which looked like generation had failed. It had not: signing in
+as the parent had ALREADY landed on the dashboard and run generation, and the
+second load was correctly a no-op under GENERATION_MIN_INTERVAL_MS. What settled
+it was the history — prior instances for those templates stopped at 2026-09-03
+(expired, when the chores were paused), nothing on 09-04, then exactly three new
+rows on 09-05 created at 14:08:36.
+
+RULE: when a before/after count fails to move, check WHEN the rows were created
+before concluding the write did not happen. Signing in as a parent is itself a
+generation trigger.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch
@@ -1463,8 +1746,11 @@ This is housekeeping, not a space fix — see the footprint numbers above.
 ## Migration audit — 2026-09-01
 
 Compared `supabase/migrations/` against the live project's applied migration
-history. As of 2026-09-03 21 migrations are applied remotely; the repo captures
-11. (Was 17 / 7 when this audit was written on 2026-09-01.)
+history. As of 2026-09-05 25 migrations are applied remotely; the repo captures
+15. (Was 21 / 11 on 2026-09-03, and 17 / 7 when this audit was written on
+2026-09-01.) The ten LIVE-BUT-NOT-IN-REPO entries below are unchanged — every
+migration added since 2026-09-01 uses the exact remote version as its filename
+prefix, which is the convention to follow.
 
 CAPTURED IN THE REPO (7):
 - 20260828212105 pin_server_side_verification_additive
@@ -1478,6 +1764,10 @@ CAPTURED IN THE REPO (7):
 - 20260903180429 create_process_loan_payments
 - 20260903201021 timezone_reconciliation_dynamic_family_timezone
 - 20260903203201 add_requested_to_chore_assignment_status
+- 20260904123546 add_recurrence_week_to_chore_assignments
+- 20260904124019 mirror_recurrence_week_onto_assignments_archive
+- 20260905182252 add_plan_goal_id_to_chore_assignments
+- 20260905182302 mirror_plan_goal_id_in_archive_old_assignments
 
 LIVE BUT NOT IN THE REPO (10) — all predate 2026-09-01:
 - 20260808214850 add_member_pins_to_families

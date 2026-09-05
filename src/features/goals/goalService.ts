@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import type { Milestone } from '@/lib/supabase'
+import { retirePlanChores } from '@/features/goals/planService'
 
 /**
  * Child-initiated savings goals.
@@ -181,14 +182,29 @@ export async function markGoalAchieved(goalId: string): Promise<void> {
  * Soft delete. The row stays, so the child's financial history is intact and
  * Achievements can show it — unceremoniously — as something they started and
  * stopped. Frees the one-active-goal slot immediately.
+ *
+ * ALSO STANDS DOWN THE GOAL'S PLAN, if it has one. A plan exists only to serve
+ * a goal, so a goal nobody is pursuing must not keep adding chores to a child's
+ * day. Unlike an ACHIEVED goal, there is no Keep-or-Done choice to offer here:
+ * the child abandoned the thing the chores were for.
+ *
+ * Order matters. The goal is abandoned FIRST and the chores second, so a
+ * failure between them leaves an abandoned goal whose chores are still running
+ * — visible on the parent's roster, still labelled with the goal, and fixable
+ * with one tap. The reverse order would strip a child's chores while leaving
+ * the goal live, which reads as the app silently deleting their work.
+ *
+ * @param memberId the goal's owner, needed to scope the plan chore update.
  */
-export async function abandonGoal(goalId: string): Promise<void> {
+export async function abandonGoal(goalId: string, memberId?: string): Promise<void> {
   const { error } = await supabase
     .from('milestones')
     .update({ status: 'abandoned' })
     .eq('id', goalId)
     .eq('status', 'active')
   if (error) throw goalError(error, 'Could not abandon the goal')
+
+  if (memberId) await retirePlanChores(memberId, goalId)
 }
 
 export interface SavingsRate {
@@ -217,6 +233,24 @@ const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000
  *
  * The read is date-bounded and status-filtered per the rules in CLAUDE.md, so
  * it cannot outgrow a page cap as history accumulates.
+ *
+ * RATE DISTINCTION — INTENTIONAL. The Goal Plan feature uses this figure two
+ * different ways, and they must NOT be made consistent:
+ *
+ *   Plan builder uses (existingWeeklyRate + planWeeklyTotal) because plan
+ *   chores do not exist yet — projection is the only honest option.
+ *
+ *   Progress tracker uses existingWeeklyRate alone because plan chores are now
+ *   roster instances being measured by getWeeklySavingsRate(). Adding
+ *   planWeeklyTotal would double-count them after week 1, making the estimate
+ *   increasingly optimistic as the plan succeeds. Measured reality beats
+ *   projection once history exists.
+ *
+ * The mechanism, so the trap is visible: this function filters on
+ * `template_id IS NOT NULL`, and a locked-in plan chore IS a roster template.
+ * Its instances therefore enter this average as soon as they are approved, and
+ * nothing in the query distinguishes them from the child's pre-existing chores
+ * — so the plan's contribution cannot be subtracted back out afterwards.
  */
 export async function getWeeklySavingsRate(memberId: string): Promise<SavingsRate> {
   const since = new Date(Date.now() - RATE_WINDOW_WEEKS * MS_PER_WEEK)

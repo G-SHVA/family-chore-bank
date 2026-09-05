@@ -3,6 +3,10 @@ import {
   getFamilyChildSummaries,
   getRoster,
   getPendingApprovals,
+  CHARACTER_MOMENT_CATEGORY,
+  RECOGNITION_TYPES,
+  RESERVED_CHORE_CATEGORIES,
+  type RecognitionCategory,
   type RosterEntry,
 } from '@/features/chores/choreService'
 import {
@@ -13,6 +17,7 @@ import {
   loadExpenseApplications,
   buildCompletion,
   buildEconomy,
+  type AssignmentRow,
   type DateRange,
 } from '@/features/analytics/analyticsService'
 import { getFamilyGoals, withGoalProgress } from '@/features/goals/goalService'
@@ -67,6 +72,27 @@ export interface ChildWeek {
   topChore: { title: string; value: number } | null
 }
 
+/**
+ * One recognition given this week — the Chapter 8 awards, surfaced for the
+ * Friday meeting.
+ *
+ * DERIVED, not queried. Every field comes off `approvedThisWeek`, which this
+ * screen already has in hand, so the section costs ZERO additional reads —
+ * the same property that makes the child-facing banner free.
+ */
+export interface WeekRecognition {
+  id: string
+  childName: string
+  type: RecognitionCategory
+  /** What the parent typed (a named award's own title, for the other two). */
+  description: string
+  note: string | null
+  amount: number
+  approvedAt: string
+  /** Resolved against the member list; null when the awarder is unknown. */
+  awardedBy: string | null
+}
+
 export interface WeekHealth {
   /** Mean hours from a child marking complete to a parent approving. */
   turnaroundHours: number | null
@@ -83,13 +109,21 @@ export interface FamilyWeekData {
   totalEarned: number
   totalSpent: number
   pendingApprovals: number
+  /** Empty when none were given — the section hides, like Loan History. */
+  recognitions: WeekRecognition[]
   health: WeekHealth
 }
 
 export async function getFamilyWeek(
   familyId: string,
   children: FamilyMember[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  /**
+   * Every active member, so a recognition can name the parent who gave it.
+   * Defaults to `children`, which simply leaves awardedBy null — the section
+   * still renders rather than throwing on an older call site.
+   */
+  allMembers: FamilyMember[] = children
 ): Promise<FamilyWeekData> {
   const range = resolveMeetingWeek(now)
   const refs = toChildRefs(children)
@@ -128,6 +162,13 @@ export async function getFamilyWeek(
 
     let topChore: ChildWeek['topChore'] = null
     for (const r of mine) {
+      // "Biggest win" must be a chore the child DID. A Direct Award or a
+      // recognition is a parent crediting them, and both routinely outvalue a
+      // $0.25 roster chore — an Earner of the Week award would otherwise become
+      // the headline achievement of the week it celebrates. Same reasoning as
+      // rosterInstancesOnly() on the streak path; this was the one money
+      // reading on the screen that still counted them.
+      if (RESERVED_CHORE_CATEGORIES.includes((r.chore?.category ?? '') as never)) continue
       const value = r.chore?.value ?? 0
       if (!topChore || value > topChore.value) {
         topChore = { title: r.chore?.title ?? 'Untitled chore', value }
@@ -169,6 +210,7 @@ export async function getFamilyWeek(
     totalEarned: childWeeks.reduce((sum, c) => sum + c.earned, 0),
     totalSpent,
     pendingApprovals: pending.length,
+    recognitions: deriveWeekRecognitions(approvedThisWeek, children, allMembers),
     health: {
       turnaroundHours: economy.turnaroundHours,
       turnaroundSample: economy.turnaroundSample,
@@ -177,6 +219,38 @@ export async function getFamilyWeek(
     },
   }
 }
+
+/**
+ * Pull this week's recognitions out of rows the screen already fetched.
+ *
+ * Newest first, and every child in the family — the Friday meeting is where
+ * they are read out, so ordering by when they were given is the order they
+ * happened in.
+ */
+function deriveWeekRecognitions(
+  approvedThisWeek: AssignmentRow[],
+  children: FamilyMember[],
+  allMembers: FamilyMember[]
+): WeekRecognition[] {
+  const childName = new Map(children.map((c) => [c.id, c.display_name ?? 'Child']))
+  const memberName = new Map(allMembers.map((m) => [m.id, m.display_name]))
+  return approvedThisWeek
+    .filter((r) => RECOGNITION_CATEGORIES.includes(r.chore?.category ?? ''))
+    .map((r) => ({
+      id: r.id,
+      childName: childName.get(r.assigned_to) ?? 'Child',
+      type: (r.chore?.category ?? CHARACTER_MOMENT_CATEGORY) as RecognitionCategory,
+      description: r.chore?.title ?? 'Something great',
+      note: r.notes,
+      amount: r.chore?.value ?? 0,
+      approvedAt: r.approved_at as string,
+      awardedBy: (r.assigned_by ? memberName.get(r.assigned_by) : null) ?? null,
+    }))
+    .sort((a, b) => new Date(b.approvedAt).getTime() - new Date(a.approvedAt).getTime())
+}
+
+/** The three markers, as strings, for a membership test over a nullable column. */
+const RECOGNITION_CATEGORIES: readonly string[] = RECOGNITION_TYPES.map((t) => t.category)
 
 /**
  * Active roster entries that produced no approved chore this week — the

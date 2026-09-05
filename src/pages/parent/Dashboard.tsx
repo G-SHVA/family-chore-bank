@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Loader2, Check, X, Clock, CheckCircle2, Flame, Percent, Sparkles } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
@@ -13,6 +14,9 @@ import {
   directAwardFromLibrary,
   directAwardCustom,
   CHARACTER_MOMENT_CATEGORY,
+  RECOGNITION_TYPES,
+  recognitionType,
+  type RecognitionCategory,
   getFamilyChores,
   getFamilyChildSummaries,
   getRoster,
@@ -67,6 +71,10 @@ export default function ParentDashboard() {
   const [decliningRequest, setDecliningRequest] = useState<ChoreRequest | null>(null)
   // Synchronous guard so a double-tap can't dispatch two approvals for one chore.
   const inFlight = useRef<Set<string>>(new Set())
+
+  // Family Week's "Give Recognition" link lands here with ?quickAdd=character.
+  const [searchParams] = useSearchParams()
+  const quickAddTab = searchParams.get('quickAdd')
 
   const load = useCallback(async () => {
     if (!familyId) return
@@ -411,6 +419,7 @@ export default function ParentDashboard() {
             currency={currency}
             familyId={familyId ?? ''}
             assignedBy={activeMember?.id ?? ''}
+            initialTab={quickAddTab}
             onDone={() => Promise.all([load(), refresh()])}
           />
         </div>
@@ -570,6 +579,7 @@ function QuickAdd({
   currency,
   familyId,
   assignedBy,
+  initialTab,
   onDone,
 }: {
   children: FamilyMember[]
@@ -579,9 +589,34 @@ function QuickAdd({
   currency: string
   familyId: string
   assignedBy: string
+  /** Tab to open on, from the ?quickAdd= query param. */
+  initialTab?: string | null
   onDone: () => Promise<unknown>
 }) {
-  const [mode, setMode] = useState<'chore' | 'expense' | 'award' | 'charge' | 'character'>('chore')
+  const [mode, setMode] = useState<'chore' | 'expense' | 'award' | 'charge' | 'character'>(
+    // Family Week links here with ?quickAdd=character so a parent can give a
+    // recognition straight after the meeting conversation, without hunting for
+    // the tab. Any other value falls through to the normal default.
+    initialTab === 'character' ? 'character' : 'chore'
+  )
+
+  // Arriving from Family Week, bring the panel into view — it sits low in a
+  // scrolling right-hand column, so pre-selecting the tab without scrolling
+  // would look like the link did nothing.
+  const panelRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (initialTab !== 'character') return
+    panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // The five tabs scroll horizontally at narrow widths, and 'Caught Being
+    // Great' is the LAST of them — so without this the strip still reads
+    // "Assign Chore / Add Expense / Direct Award" while the form below is
+    // already the recognition one. Correct content under a tab bar showing a
+    // different tab reads as a bug. `inline` only, so it cannot fight the
+    // vertical scroll above.
+    panelRef.current
+      ?.querySelector('[data-tab="character"]')
+      ?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+  }, [initialTab])
   const [childId, setChildId] = useState('')
   const [itemId, setItemId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -611,9 +646,31 @@ function QuickAdd({
   // tab's is: switching tabs must never carry a half-filled recognition into an
   // award. The amount defaults to the book's own value for
   // "Get Caught Serving the Family" and stays editable.
+  // Which of the three Chapter 8 recognitions is being given. Character Moment
+  // is the default, so the existing flow is byte-for-byte what it was.
+  const [recognition, setRecognition] = useState<RecognitionCategory>(CHARACTER_MOMENT_CATEGORY)
   const [characterTitle, setCharacterTitle] = useState('')
   const [characterAmount, setCharacterAmount] = useState(CHARACTER_MOMENT_DEFAULT)
   const [characterNote, setCharacterNote] = useState('')
+
+  const recognitionCfg = recognitionType(recognition)
+
+  /**
+   * Switching type re-fills the description and amount from that recognition's
+   * defaults — but only the fields the type OWNS. The note is the parent's own
+   * writing and survives, the way it does when they retype a title.
+   *
+   * Both fields stay editable afterwards, which is the point: the defaults are
+   * a starting position, not a price list.
+   */
+  function selectRecognition(category: RecognitionCategory) {
+    const cfg = recognitionType(category)
+    setRecognition(category)
+    setCharacterTitle(cfg.defaultTitle)
+    setCharacterAmount(cfg.defaultAmount)
+    setDone(null)
+    setError(null)
+  }
 
   const awardChore = chores.find((c) => c.id === awardChoreId)
   const parsedAmount = Number.parseFloat(customAmount)
@@ -674,7 +731,10 @@ function QuickAdd({
   const characterBlockReason: string | null = !childId
     ? 'Select a child to recognize.'
     : !characterTitle.trim()
-      ? 'Describe what they did.'
+      ? // Only reachable on a named award if the parent clears the prefill.
+        recognition === CHARACTER_MOMENT_CATEGORY
+        ? 'Describe what they did.'
+        : 'Add a title for this recognition.'
       : !characterAmountValid
         ? 'Enter an amount greater than zero.'
         : null
@@ -705,6 +765,10 @@ function QuickAdd({
   }
 
   function resetCharacter() {
+    // Back to Character Moment, not to whichever type was last used: this runs
+    // on tab switch, and a parent returning to the tab should find it in the
+    // same state it has always opened in.
+    setRecognition(CHARACTER_MOMENT_CATEGORY)
     setCharacterTitle('')
     setCharacterAmount(CHARACTER_MOMENT_DEFAULT)
     setCharacterNote('')
@@ -746,11 +810,17 @@ function QuickAdd({
           characterTitle,
           parsedCharacter,
           characterNote,
-          CHARACTER_MOMENT_CATEGORY
+          recognition
         )
         await onDone()
         setDone(`Recognized ${childName} — ${credited} credited.`)
-        resetCharacter()
+        // Keeps the recognition TYPE and refills its defaults, rather than
+        // snapping back to Character Moment: naming an Earner of the Week
+        // usually means naming one per child, and re-picking the pill between
+        // each is friction the parent gains nothing from. The tab-switch reset
+        // is the one that returns the panel to its default state.
+        selectRecognition(recognition)
+        setCharacterNote('')
       } else if (mode === 'chore') {
         await quickAssignChore(itemId, childId, assignedBy)
         await onDone()
@@ -849,7 +919,7 @@ function QuickAdd({
   ] as const
 
   return (
-    <section>
+    <section ref={panelRef}>
       <h2 className="mb-3 text-2xl">Quick Add</h2>
       <Card className="flex flex-col gap-3">
         {/* Five tabs do not fit at 375px. They scroll horizontally instead of
@@ -860,6 +930,7 @@ function QuickAdd({
           {tabs.map((t) => (
             <button
               key={t.key}
+              data-tab={t.key}
               onClick={() => {
                 setMode(t.key)
                 setItemId('')
@@ -1018,20 +1089,46 @@ function QuickAdd({
           </>
         ) : mode === 'character' ? (
           <>
-            <p className="text-sm text-text-muted">
-              Recognize a moment of character — no chore required.
-            </p>
+            {/* The three Chapter 8 recognitions. Pills rather than a <select>:
+                there are exactly three, they are the first decision on the tab,
+                and a dropdown would hide two of them behind a tap. Scrolls
+                horizontally at 375px for the same reason the tab strip does —
+                wrapping cost a second row, squeezing broke the touch target. */}
+            <div
+              role="radiogroup"
+              aria-label="Recognition type"
+              className="scroll-panel flex gap-1 overflow-x-auto rounded-input border border-line bg-deep p-1"
+            >
+              {RECOGNITION_TYPES.map((t) => (
+                <button
+                  key={t.category}
+                  role="radio"
+                  aria-checked={recognition === t.category}
+                  onClick={() => selectRecognition(t.category)}
+                  className={cn(
+                    'min-h-touch shrink-0 whitespace-nowrap rounded-input px-4 text-sm sm:flex-1',
+                    recognition === t.category
+                      ? 'bg-antique font-medium text-deep'
+                      : 'text-text-muted hover:text-text'
+                  )}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-sm text-text-muted">{recognitionCfg.prompt}</p>
 
             <div>
               <label htmlFor="character-desc" className={labelClass}>
-                What did they do?
+                {recognitionCfg.titleLabel}
               </label>
               <input
                 id="character-desc"
                 type="text"
                 value={characterTitle}
                 onChange={(e) => setCharacterTitle(e.target.value)}
-                placeholder="e.g. Helped their sibling without being asked"
+                placeholder={recognitionCfg.titlePlaceholder}
                 className={cn(fieldClass, 'min-h-touch')}
               />
             </div>
@@ -1049,7 +1146,7 @@ function QuickAdd({
                 aria-describedby={characterBlockReason ? 'character-block-reason' : undefined}
                 value={characterAmount}
                 onChange={(e) => setCharacterAmount(e.target.value)}
-                placeholder="0.25"
+                placeholder={recognitionCfg.defaultAmount}
                 className={cn(fieldClass, 'min-h-touch')}
               />
             </div>
@@ -1063,7 +1160,7 @@ function QuickAdd({
                 value={characterNote}
                 onChange={(e) => setCharacterNote(e.target.value)}
                 rows={2}
-                placeholder="e.g. Nobody asked — they just saw it needed doing"
+                placeholder={recognitionCfg.notePlaceholder}
                 className={fieldClass}
               />
             </div>

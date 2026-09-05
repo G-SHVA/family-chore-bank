@@ -1,7 +1,42 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { Sparkles, X } from 'lucide-react'
-import type { CharacterMoment } from '@/features/chores/choreService'
+import { PiggyBank, Sparkles, Trophy, X } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  CHARACTER_MOMENT_CATEGORY,
+  EARNER_OF_WEEK_CATEGORY,
+  STRATEGIC_SAVER_CATEGORY,
+  recognitionType,
+  type CharacterMoment,
+  type RecognitionCategory,
+} from '@/features/chores/choreService'
 import { formatCurrency } from '@/lib/utils'
+
+/**
+ * Icon and headline per recognition — the child-facing half of
+ * RECOGNITION_TYPES, which carries everything a service file legitimately can.
+ * Icons stop here because a service must not import React.
+ *
+ * `headline` takes the awarding parent's name already resolved, so the null
+ * fallback ("Your parent") is decided once at the call site rather than three
+ * times here.
+ */
+const RECOGNITION_LOOK: Record<
+  RecognitionCategory,
+  { icon: LucideIcon; headline: (by: string) => string }
+> = {
+  [CHARACTER_MOMENT_CATEGORY]: {
+    icon: Sparkles,
+    headline: (by) => `${by} caught you being great!`,
+  },
+  [EARNER_OF_WEEK_CATEGORY]: {
+    icon: Trophy,
+    headline: (by) => `${by} named you Earner of the Week!`,
+  },
+  [STRATEGIC_SAVER_CATEGORY]: {
+    icon: PiggyBank,
+    headline: (by) => `${by} recognized you as a Strategic Saver!`,
+  },
+}
 
 /**
  * "Caught Being Great" — the child-facing half of a character recognition.
@@ -32,7 +67,12 @@ export function CharacterMomentBanner({
 }) {
   return (
     <AnimatePresence initial={false}>
-      {moments.map((m) => (
+      {moments.map((m) => {
+        // Falls back rather than naming the shared operator account: the child
+        // dashboard nulls awardedBy in that case.
+        const look = RECOGNITION_LOOK[m.type] ?? RECOGNITION_LOOK[CHARACTER_MOMENT_CATEGORY]
+        const Icon = look.icon
+        return (
         <motion.div
           key={m.id}
           layout
@@ -75,18 +115,24 @@ export function CharacterMomentBanner({
               not doing the child a favour. Every word is unchanged. */}
           <div className="relative flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-input border border-antique/40 text-antique">
-              <Sparkles className="h-5 w-5" strokeWidth={1.5} />
+              <Icon className="h-5 w-5" strokeWidth={1.5} />
             </div>
 
             <div className="min-w-0 flex-1">
               <h3 className="text-xl leading-tight text-antique">
-                {/* Falls back rather than naming the shared operator account:
-                    the child dashboard nulls awardedBy in that case. */}
-                {m.awardedBy
-                  ? `${m.awardedBy} caught you being great!`
-                  : 'Your parent caught you being great!'}
+                {look.headline(m.awardedBy ?? 'Your parent')}
               </h3>
-              <p className="mt-1 line-clamp-2 text-base leading-snug text-text">{m.description}</p>
+              {/* A named award's description IS its title ("Earner of the
+                  Week"), which the headline just said. Printing it again is
+                  noise on a screen built for a five-year-old, so it shows only
+                  when the parent actually typed something of their own.
+                  Character Moment always has a real description and is
+                  unaffected. */}
+              {m.description !== recognitionType(m.type).defaultTitle && (
+                <p className="mt-1 line-clamp-2 text-base leading-snug text-text">
+                  {m.description}
+                </p>
+              )}
               {m.note && (
                 <p className="mt-0.5 line-clamp-1 text-sm italic text-text-muted">{m.note}</p>
               )}
@@ -106,7 +152,8 @@ export function CharacterMomentBanner({
             </div>
           </div>
         </motion.div>
-      ))}
+        )
+      })}
     </AnimatePresence>
   )
 }
