@@ -96,10 +96,15 @@ export default function KioskSelect() {
 
       {/* Picker */}
       <main className="flex flex-1 flex-col items-center justify-center gap-8 py-8">
-        {/* No heading. Four named avatar tiles are self-explanatory — the
-            Netflix profile pattern — and a label above them only restates what
-            the tiles already say. The parent of this flex column owns the
-            spacing with `gap-8`, so removing a child leaves no gap behind. */}
+        {/* No VISIBLE heading. Four named avatar tiles are self-explanatory —
+            the Netflix profile pattern — and a label above them only restates
+            what the tiles already say.
+
+            This one is sr-only so the page still has an h1 for screen readers
+            and the document outline. It is `position: absolute`, so it is not a
+            flex child in layout terms and adds nothing to the column's `gap-8`
+            — the logo-to-grid spacing stays exactly 32px. */}
+        <h1 className="sr-only">Family Chore Bank</h1>
         <img src="/logo.png" alt="Family Chore Bank" className="h-[120px] w-[120px]" />
 
         {members.length === 0 ? (
