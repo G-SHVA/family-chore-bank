@@ -96,8 +96,11 @@ export default function KioskSelect() {
 
       {/* Picker */}
       <main className="flex flex-1 flex-col items-center justify-center gap-8 py-8">
+        {/* No heading. Four named avatar tiles are self-explanatory — the
+            Netflix profile pattern — and a label above them only restates what
+            the tiles already say. The parent of this flex column owns the
+            spacing with `gap-8`, so removing a child leaves no gap behind. */}
         <img src="/logo.png" alt="Family Chore Bank" className="h-[120px] w-[120px]" />
-        <h1 className="text-4xl text-text">Who’s using the tablet?</h1>
 
         {members.length === 0 ? (
           <p className="text-text-muted">No family members yet. Add them in parent settings.</p>
