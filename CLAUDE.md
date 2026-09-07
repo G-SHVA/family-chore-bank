@@ -1636,6 +1636,62 @@ RULE: when a before/after count fails to move, check WHEN the rows were created
 before concluding the write did not happen. Signing in as a parent is itself a
 generation trigger.
 
+## SHIPPED 2026-09-07 — parent dashboard Session A (merged approval queue)
+
+Eve reported feeling overwhelmed by the parent interface. A measured audit found
+the cause was not decoration but a CONTRADICTION: the stat card counted chore
+requests and the queue below it did not, so with 25 requests outstanding the
+screen rendered "PENDING APPROVALS 25" directly above "All caught up — nothing
+to approve." See the truncation-class note for getApprovalQueue and the PARENT
+DASHBOARD READ COUNT item for the two structural changes.
+
+Measured before -> after (1024x768 and 390x844, live family data):
+  chrome before first actionable pixel   244px -> 129px  /  ~517px -> 93px
+  approval cards visible, no scrolling   1.9 -> 3.9      /  0 -> 2
+  nested scroll containers               4 -> 1  (one pane hid 4,627 of 5,007px)
+  card width on tablet                   413px -> 704px
+  dashboard reads                        8 -> 2
+
+Quick Add moved from an always-open five-tab form to a + in the status band.
+Five labelled tabs on a permanent form read as five daily jobs, which is the
+opposite of what a three-minute screen should imply.
+
+DASHBOARD SESSION A — TWO FIXES FOUND IN VERIFICATION:
+
+1. Full Credit button was missing the dollar amount. QueueCard now sources the
+   amount from the same value the write uses — 'FULL CREDIT ($0.25)'. The
+   display and the write cannot drift because they share one source.
+
+2. Empty state 'You're all caught up' truncated with ellipsis at 390px.
+   truncate removed — the most important message on the screen cannot lose
+   words. Wraps to two lines at narrow width.
+
+VERIFYING AN EMPTY STATE WITHOUT WRITING TO LIVE DATA. Emptying a 27-item queue
+would have meant 27 writes on real family accounts. Instead window.fetch was
+stubbed IN THE BROWSER for exactly two read-only selects (status=eq.completed
+and status=eq.requested), returning []. Everything else — every read and write
+generateDailyAssignments makes — went to the real network untouched, which was
+confirmed from the intercept log before trusting the result. Scoping the stub
+this narrowly is the whole point: a blanket fetch stub would have made the
+generator see an empty table and insert a duplicate roster.
+
+MODAL EXIT VERIFIED UNDER THE ADVERSE CASE. Closing the modal in a BACKGROUNDED
+tab leaves it mounted at opacity 0.06 — framer-motion's exit never finishes,
+because Chrome throttles rAF there. It is still harmless: pointer-events is
+'none' on the root and the dialog, and elementFromPoint at the screen centre
+returns the queue card underneath. That is the 2026-09-03 backdrop fix holding
+in precisely the condition that would defeat an opacity-only approach. A
+mounted dialog after close is NOT a regression — check pointer-events and
+elementFromPoint before treating it as one.
+
+STILL OPEN — Session B, deliberately not started: navigation hierarchy, Manage
+-> Setup, Analytics onto Family Week, and the family balance total restored
+there as "Family economy: $X.XX". Between the two deploys that figure is
+visible NOWHERE in the app; accepted knowingly, since it is not actionable and
+individual balances remain on each child's dashboard. Session A also leaves the
+64px sidebar in place at 390px, so the phone gains the vertical reclaim only —
+the horizontal 64px is Session B's.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch
