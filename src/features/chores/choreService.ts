@@ -1011,7 +1011,18 @@ export interface PendingApproval extends AssignmentWithChore {
   member: PendingMember | null
 }
 
-/** All completed instances awaiting approval, oldest first, with chore + child. */
+/**
+ * All completed instances awaiting approval, oldest first, with chore + child.
+ *
+ * The `.limit()` is a PAYLOAD GUARD, NOT A FILTER. What actually bounds this
+ * read is the explicit status filter: 'completed' is transient by construction
+ * (a row leaves it the moment a parent answers), so it cannot grow with history
+ * the way an 'approved' or 'expired' read does, and 500 is nowhere near a
+ * realistic ceiling. The limit is here because the standing rule in CLAUDE.md
+ * admits no exceptions — never issue an unbounded PostgREST read against a
+ * growing table, because the server applies its own max-rows silently and an
+ * invisible cap is worse than a stated one.
+ */
 export async function getPendingApprovals(): Promise<PendingApproval[]> {
   const { data, error } = await supabase
     .from('chore_assignments')
@@ -1021,9 +1032,13 @@ export async function getPendingApprovals(): Promise<PendingApproval[]> {
     .eq('is_template', false)
     .eq('status', 'completed')
     .order('completed_at', { ascending: true })
+    .limit(APPROVAL_FETCH_LIMIT)
   if (error) throw error
   return (data ?? []) as unknown as PendingApproval[]
 }
+
+/** Payload guard on getPendingApprovals. See the note on that function. */
+const APPROVAL_FETCH_LIMIT = 500
 
 /** Approve a completed chore — atomic balance credit + milestone progress via RPC. */
 export async function approveChore(assignmentId: string, parentMemberId: string): Promise<void> {
@@ -2184,6 +2199,78 @@ export async function getChoreRequests(): Promise<ChoreRequestQueue> {
     oneTime: rows.filter((r) => !r.is_template),
     roster: rows.filter((r) => r.is_template),
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * The parent's single work queue
+ * ------------------------------------------------------------------ */
+
+/** Which of the three things a parent can be asked to answer. */
+export type QueueKind = 'chore' | 'request-onetime' | 'request-roster'
+
+export interface QueueItem {
+  kind: QueueKind
+  /** The underlying row. Both shapes extend AssignmentWithChore + member. */
+  item: PendingApproval | ChoreRequest
+  /**
+   * When the child started waiting: completed_at for a finished chore,
+   * created_at for a request. Sort key, and the "2h ago" on the card.
+   */
+  waitingSince: string | null
+}
+
+/**
+ * Completed chores awaiting approval AND both claim-request paths, as ONE
+ * ordered array — the single source of truth behind the parent dashboard.
+ *
+ * COMPOSED FROM TWO READS, NEVER ONE. The obvious implementation is a single
+ * query with `.in('status', ['completed', 'requested'])`. Do not write that.
+ * It puts money-bearing 'completed' rows and non-money 'requested' rows under
+ * ONE row cap, where a backlog of the second can silently evict the first —
+ * verbatim the getMemberInstances failure, where a child's live chores competed
+ * with their own history for the same 500 slots. Two reads means two caps, and
+ * neither category can starve the other.
+ *
+ * Both underlying reads are bounded by TRANSIENT status ('completed',
+ * 'requested'), so neither grows with history. The limits on each are payload
+ * guards, not the correctness mechanism.
+ *
+ * WHY THE MERGE MATTERS BEYOND LAYOUT. The count in the dashboard's status band
+ * and the list beneath it are now the same array, so the screen cannot render
+ * "25 pending" above "All caught up — nothing to approve", which is exactly
+ * what it did when the stat card counted requests and the queue did not.
+ */
+export async function getApprovalQueue(): Promise<QueueItem[]> {
+  const [approvals, requests] = await Promise.all([getPendingApprovals(), getChoreRequests()])
+
+  const items: QueueItem[] = [
+    ...approvals.map((a) => ({
+      kind: 'chore' as const,
+      item: a as PendingApproval | ChoreRequest,
+      waitingSince: a.completed_at,
+    })),
+    ...requests.oneTime.map((r) => ({
+      kind: 'request-onetime' as const,
+      item: r as PendingApproval | ChoreRequest,
+      waitingSince: r.created_at,
+    })),
+    ...requests.roster.map((r) => ({
+      kind: 'request-roster' as const,
+      item: r as PendingApproval | ChoreRequest,
+      waitingSince: r.created_at,
+    })),
+  ]
+
+  // Money first, then longest-waiting first within each tier. `id` is the final
+  // tie-break so the order is DETERMINISTIC — see the Family Week "biggest win"
+  // note in CLAUDE.md for what an unstable tie-break costs in verification time.
+  const rank = (k: QueueKind) => (k === 'chore' ? 0 : 1)
+  return items.sort(
+    (a, b) =>
+      rank(a.kind) - rank(b.kind) ||
+      (a.waitingSince ?? '').localeCompare(b.waitingSince ?? '') ||
+      a.item.id.localeCompare(b.item.id)
+  )
 }
 
 /**

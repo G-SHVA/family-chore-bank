@@ -258,6 +258,27 @@ TRUNCATION CLASS -- FOUR INSTANCES FIXED:
    expense read on 2026-09-02, precisely so the money at the top of that screen
    does not ride on this. Fix before public launch.
 
+TRUNCATION CLASS -- PREVENTED BY DESIGN (getApprovalQueue) [2026-09-07]:
+The merged approval queue uses two independent reads (getPendingApprovals +
+getChoreRequests) composed in memory, never one .in('status',[...]) query. A
+single query would put money-bearing completed rows and non-money requested
+rows under one row cap where a request backlog could silently evict completed
+chores -- verbatim the getMemberInstances failure pattern. This is the fifth
+instance of the truncation class, prevented by design rather than fixed after
+the fact.
+
+Two supporting notes. getPendingApprovals gained .limit(500) in the same pass;
+it was the last unbounded read on the parent path, and while 'completed' is
+transient by construction and 500 is nowhere near a realistic ceiling, the
+standing rule admits no exceptions -- an invisible server-side cap is worse
+than a stated one. And the merge is what makes the dashboard's count and list
+the SAME array, which is a correctness property, not a layout one: the old
+screen derived the headline figure from a stat card that counted requests and
+the list from a read that did not, so with 25 requests outstanding it rendered
+"PENDING APPROVALS 25" directly above "All caught up -- nothing to approve."
+Measured live on 2026-09-07. Two sources of truth cannot be styled into
+agreement; one array makes that state unrenderable.
+
 Any new query against chore_assignments or chore_assignments_archive must:
 - Never rely on a row limit to filter data
 - Always specify status filters explicitly
@@ -1119,6 +1140,22 @@ warn you it has gone stale.
   status, one by date.
   RULE: any future addition to the child dashboard must either replace an
   existing read or justify the addition explicitly.
+
+- PARENT DASHBOARD READ COUNT: 2 reads, as of the Session A redesign
+  [2026-09-07]. It was 8 parallel reads after a serial
+  generateDailyAssignments(); it is now getApprovalQueue(), which composes
+  getPendingApprovals + getChoreRequests in memory (see the truncation-class
+  note above for why that is two reads and not one).
+  Quick Add's three reads — getFamilyChores, getFamilyExpenses, getRoster —
+  are now DEFERRED until the parent taps +, so a parent who only ever approves
+  chores never pays for them at all. getFamilyChildSummaries, getFamilyGoals
+  and getRecentExpenseApplications were deleted outright along with the
+  sections they fed (the Children cards, the goal progress bars, and the
+  "Expenses applied" stat).
+  RULE: any future addition to the parent dashboard must either replace an
+  existing read or justify the addition explicitly — the same rule as the
+  child dashboard above. The most-opened parent screen must not be the most
+  expensive screen in the app.
 
 - SCHEMA COMPLETENESS — supabase/migrations/ is not rebuildable from scratch.
   Base tables, triggers, and RLS policies predate migration history. Before a

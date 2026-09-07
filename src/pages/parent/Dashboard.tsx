@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Loader2, Check, X, Clock, CheckCircle2, Flame, Percent, Sparkles } from 'lucide-react'
+import { Loader2, Check, X, Clock, CheckCircle2, Percent, Sparkles, Plus } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
   generateDailyAssignments,
-  getPendingApprovals,
+  getApprovalQueue,
   approveChore,
   approveChoreHalfCredit,
   splitHalfCredit,
@@ -18,33 +18,26 @@ import {
   recognitionType,
   type RecognitionCategory,
   getFamilyChores,
-  getFamilyChildSummaries,
   getRoster,
   dailyRosterTotal,
-  getChoreRequests,
   approveChoreRequest,
   declineChoreRequest,
   formatFrequency,
   type ChoreRequest,
-  type ChoreRequestQueue,
   type PendingApproval,
-  type ChildSummary,
+  type QueueItem,
   type RosterEntry,
 } from '@/features/chores/choreService'
 import {
   getFamilyExpenses,
   applyExpense,
   directChargeCustom,
-  getRecentExpenseApplications,
 } from '@/features/expenses/expenseService'
-import { getFamilyGoals, withGoalProgress } from '@/features/goals/goalService'
 import { getActiveMembers, isChild } from '@/features/family/familyService'
-import type { Chore, Expense, FamilyMember, Milestone } from '@/lib/supabase'
-import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
+import type { Chore, Expense, FamilyMember } from '@/lib/supabase'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
-import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
 import { cn, formatCurrency, initials, timeAgo } from '@/lib/utils'
 
 export default function ParentDashboard() {
@@ -54,21 +47,15 @@ export default function ParentDashboard() {
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [approvals, setApprovals] = useState<PendingApproval[]>([])
-  const [summaries, setSummaries] = useState<ChildSummary[]>([])
-  const [chores, setChores] = useState<Chore[]>([])
-  const [expenses, setExpenses] = useState<Expense[]>([])
-  const [roster, setRoster] = useState<RosterEntry[]>([])
-  const [recentExpenseCount, setRecentExpenseCount] = useState(0)
-  // Active savings goals keyed by the child who set them. Supplementary detail
-  // on the balance card, so a child without one simply renders as before.
-  const [goalsByChild, setGoalsByChild] = useState<Record<string, Milestone>>({})
+  // THE queue. Completed chores and both claim-request paths in one ordered
+  // array — the count in the status band and the list below it read this same
+  // value, so they can never disagree. See getApprovalQueue.
+  const [queue, setQueue] = useState<QueueItem[]>([])
+  const [children, setChildren] = useState<FamilyMember[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejecting, setRejecting] = useState<PendingApproval | null>(null)
-  // Claim requests, both paths. Empty for a family that never uses the claim
-  // library, and the section renders nothing at all in that case.
-  const [requests, setRequests] = useState<ChoreRequestQueue>({ oneTime: [], roster: [] })
   const [decliningRequest, setDecliningRequest] = useState<ChoreRequest | null>(null)
+  const [quickAddOpen, setQuickAddOpen] = useState(false)
   // Synchronous guard so a double-tap can't dispatch two approvals for one chore.
   const inFlight = useRef<Set<string>>(new Set())
 
@@ -76,6 +63,19 @@ export default function ParentDashboard() {
   const [searchParams] = useSearchParams()
   const quickAddTab = searchParams.get('quickAdd')
 
+  /**
+   * TWO READS. That is the whole dashboard load.
+   *
+   * It was eight, because the screen carried three reporting surfaces that
+   * answered questions nobody asks daily. getFamilyChildSummaries, getFamilyGoals
+   * and getRecentExpenseApplications were deleted outright along with the
+   * sections they fed; Quick Add's three reads now happen inside the modal, when
+   * a parent actually taps +. See the read-count rule in CLAUDE.md before adding
+   * anything back here.
+   *
+   * `children` comes off the getActiveMembers call that already had to happen,
+   * so the Quick Add child picker costs no read of its own.
+   */
   const load = useCallback(async () => {
     if (!familyId) return
     try {
@@ -84,37 +84,8 @@ export default function ParentDashboard() {
       // so the roster stays live even if no child has opened the app today.
       await generateDailyAssignments()
       const members = await getActiveMembers(familyId)
-      const children = members.filter(isChild)
-      const [pa, sums, ch, ex, recent, ros, goals, reqs] = await Promise.all([
-        getPendingApprovals(),
-        getFamilyChildSummaries(children),
-        getFamilyChores(familyId),
-        getFamilyExpenses(familyId),
-        getRecentExpenseApplications(50),
-        // Powers the Quick Add daily-total readout: what a child's day is
-        // already worth before this assignment lands on it.
-        getRoster(),
-        getFamilyGoals(familyId),
-        // Both claim paths in one status-bounded read. 'requested' is
-        // transient by construction, so this cannot grow with history.
-        getChoreRequests(),
-      ])
-      setApprovals(pa)
-      setRequests(reqs)
-      setSummaries(sums)
-      setChores(ch)
-      setExpenses(ex)
-      setRecentExpenseCount(recent.length)
-      setRoster(ros)
-      // Only active goals surface here. Achieved and abandoned ones are history
-      // and belong on the Manage screen, not on a live balance card.
-      setGoalsByChild(
-        Object.fromEntries(
-          goals
-            .filter((g) => g.status === 'active' && g.created_by_member)
-            .map((g) => [g.created_by_member as string, g])
-        )
-      )
+      setChildren(members.filter(isChild))
+      setQueue(await getApprovalQueue())
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load dashboard.')
     } finally {
@@ -126,10 +97,11 @@ export default function ParentDashboard() {
     void load()
   }, [load])
 
-  const totalBalance = useMemo(
-    () => summaries.reduce((sum, s) => sum + (s.member.balance ?? 0), 0),
-    [summaries]
-  )
+  // Family Week deep-links with ?quickAdd=character so a parent can give a
+  // recognition straight after the meeting. Open the modal on arrival.
+  useEffect(() => {
+    if (quickAddTab) setQuickAddOpen(true)
+  }, [quickAddTab])
 
   async function handleApprove(a: PendingApproval) {
     if (!activeMember) return
@@ -239,193 +211,49 @@ export default function ParentDashboard() {
     )
   }
 
-  const children = summaries.map((s) => s.member)
-
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-6 overflow-hidden">
-      <h1 className="spine shrink-0 pb-4 text-4xl">Parent Dashboard</h1>
+    <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden">
+      <StatusBand count={queue.length} onQuickAdd={() => setQuickAddOpen(true)} />
 
       {error && (
-        <div className="shrink-0 rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">{error}</div>
+        <div className="shrink-0 rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">
+          {error}
+        </div>
       )}
 
-      {/* Zone 1 — static header. Overview stats never scroll. */}
-      <div className="grid shrink-0 grid-cols-1 gap-4 sm:grid-cols-3">
-        <Card>
-          <div className="label-caps text-[11px] text-text-muted">Total family balance</div>
-          <BalanceDisplay
-            amount={totalBalance}
-            currency={currency}
-            className="mt-2 block text-4xl text-green"
-          />
-        </Card>
-        <Card>
-          <div className="label-caps text-[11px] text-text-muted">Pending approvals</div>
-          {/* Finished chores AND unanswered claim requests. Both are things a
-              parent has to act on, and a child waiting on a request is waiting
-              on this number just as much as one waiting on an approval. */}
-          <div className="display mt-2 text-4xl text-antique">
-            {approvals.length + requests.oneTime.length + requests.roster.length}
-          </div>
-        </Card>
-        <Card>
-          <div className="label-caps text-[11px] text-text-muted">Expenses applied</div>
-          <div className="display mt-2 text-4xl text-text">{recentExpenseCount}</div>
-        </Card>
-      </div>
-
-      <div className="scroll-skin grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto pr-2 lg:grid-cols-5 lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden lg:pr-0">
-        {/* Zone 2 — approvals queue scrolls in its own contained area. */}
-        <section className="flex flex-col lg:col-span-3 lg:min-h-0">
-          <h2 className="mb-3 shrink-0 text-2xl">
-            Pending Approvals{' '}
-            {approvals.length > 0 && (
-              <span className="label-caps ml-1 rounded-input border border-antique/50 px-2 py-0.5 text-xs text-antique">
-                {approvals.length}
-              </span>
-            )}
-          </h2>
-          {approvals.length === 0 ? (
-            <Card className="flex flex-col items-center gap-2 py-12 text-center text-text-muted">
-              <CheckCircle2 className="h-10 w-10 text-green" />
-              All caught up — nothing to approve.
-            </Card>
-          ) : (
-            <div className="scroll-skin flex flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-2">
-              <AnimatePresence initial={false}>
-                {approvals.map((a) => (
-                  <motion.div
-                    key={a.id}
-                    layout
-                    exit={{ opacity: 0, x: 40 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <Card className="flex flex-col gap-4">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <Avatar member={a.member} />
-                        <div className="min-w-0">
-                          <div className="display text-lg text-text">{a.chore?.title}</div>
-                          <div className="text-sm text-text-muted">
-                            {a.member?.display_name} ·{' '}
-                            <span className="font-semibold text-antique">
-                              {formatCurrency(a.chore?.value ?? 0, currency)}
-                            </span>
-                            <span className="ml-2 inline-flex items-center gap-1">
-                              <Clock className="h-3.5 w-3.5" /> {timeAgo(a.completed_at)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      {/* Three outcomes, all visible — never a dropdown. Gold
-                          outline / antique outline / red outline reads as a
-                          descending scale of approval at a glance.
-                          size="lgResponsive": 44px on Eve's phone, the full
-                          64px kiosk target on the wall tablet. */}
-                      <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-3">
-                        <Button
-                          size="lgResponsive"
-                          variant="primaryList"
-                          onClick={() => handleApprove(a)}
-                          disabled={busyId === a.id}
-                        >
-                          <Check className="h-5 w-5 shrink-0" /> Full Credit
-                        </Button>
-                        <Button
-                          size="lgResponsive"
-                          variant="accent"
-                          onClick={() => handleHalfCredit(a)}
-                          disabled={busyId === a.id}
-                          title="Completed after a second reminder"
-                        >
-                          <Percent className="h-5 w-5 shrink-0" />
-                          {/* The parent must see what they are authorising
-                              before they tap, so the figure is on the button
-                              and comes from the same split the write uses. */}
-                          Half ({formatCurrency(halfCreditAmount(a), currency)})
-                        </Button>
-                        <Button
-                          size="lgResponsive"
-                          variant="danger"
-                          onClick={() => setRejecting(a)}
-                          disabled={busyId === a.id}
-                          title="Completed only after multiple reminders"
-                        >
-                          <X className="h-5 w-5 shrink-0" /> No Credit
-                        </Button>
-                      </div>
-                    </Card>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </div>
-          )}
-
-          <ChoreRequests
-            requests={requests}
-            currency={currency}
-            busyId={busyId}
-            onApprove={handleApproveRequest}
-            onDecline={setDecliningRequest}
-          />
-        </section>
-
-        {/* Right column: child cards + quick add */}
-        <div className="scroll-skin flex flex-col gap-6 lg:col-span-2 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
-          <section>
-            <h2 className="mb-3 text-2xl">Children</h2>
-            <div className="flex flex-col gap-3">
-              {summaries.map((s) => (
-                <Card key={s.member.id}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Avatar member={s.member} />
-                      <div className="display text-lg text-text">{s.member.display_name}</div>
-                    </div>
-                    <BalanceDisplay
-                      amount={s.member.balance ?? 0}
-                      currency={currency}
-                      className="text-2xl text-green"
-                    />
-                  </div>
-                  <div className="mt-3 flex items-center gap-4 text-sm text-text-muted">
-                    <span>
-                      This week:{' '}
-                      <span className="font-semibold text-text">
-                        {formatCurrency(s.weeklyEarnings, currency)}
-                      </span>
-                    </span>
-                    {s.currentStreak > 0 && (
-                      <span className="flex items-center gap-1 text-antique">
-                        <Flame className="h-4 w-4" /> {s.currentStreak}d
-                      </span>
-                    )}
-                    {s.pendingCount > 0 && <span>{s.pendingCount} pending</span>}
-                  </div>
-                  <GoalPreview
-                    goal={goalsByChild[s.member.id]}
-                    balance={s.member.balance ?? 0}
-                    currency={currency}
-                  />
-                </Card>
-              ))}
-            </div>
-          </section>
-
-          <QuickAdd
-            children={children}
-            chores={chores}
-            expenses={expenses}
-            roster={roster}
-            currency={currency}
-            familyId={familyId ?? ''}
-            assignedBy={activeMember?.id ?? ''}
-            initialTab={quickAddTab}
-            onDone={() => Promise.all([load(), refresh()])}
-          />
+      {queue.length === 0 ? (
+        <EmptyQueue />
+      ) : (
+        /* THE ONLY SCROLLER ON THIS SCREEN, and that is the point. The old
+           layout nested four — the two-column grid, the left section, the
+           capped request pane and the right rail — so a parent scrolled a
+           380px porthole holding 5,000px of content while three other
+           scrollers hid a further 800px between them. */
+        <div className="scroll-skin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <AnimatePresence initial={false}>
+            {queue.map((entry) => (
+              <motion.div
+                key={entry.item.id}
+                layout
+                exit={{ opacity: 0, x: 40 }}
+                transition={{ duration: 0.2 }}
+              >
+                <QueueCard
+                  entry={entry}
+                  currency={currency}
+                  busy={busyId === entry.item.id}
+                  onFullCredit={handleApprove}
+                  onHalfCredit={handleHalfCredit}
+                  onNoCredit={setRejecting}
+                  onApproveRequest={handleApproveRequest}
+                  onDeclineRequest={setDecliningRequest}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
-      </div>
+      )}
 
-      {/* Reject modal */}
       <RejectModal
         approval={rejecting}
         onClose={() => setRejecting(null)}
@@ -437,7 +265,321 @@ export default function ParentDashboard() {
         onClose={() => setDecliningRequest(null)}
         onSubmit={handleDeclineRequest}
       />
+
+      <QuickAddModal
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        familyChildren={children}
+        currency={currency}
+        familyId={familyId ?? ''}
+        assignedBy={activeMember?.id ?? ''}
+        initialTab={quickAddTab}
+        onDone={() => Promise.all([load(), refresh()])}
+      />
     </div>
+  )
+}
+
+/**
+ * The status band — the single source of truth for "is there work?".
+ *
+ * `count` is queue.length, and the list below renders that same array. The old
+ * screen derived the headline figure from one place (a stat card that counted
+ * approvals AND requests) and the list from another (approvals only), so with
+ * 25 requests outstanding it displayed "PENDING APPROVALS 25" directly above
+ * "All caught up — nothing to approve." A parent cannot trust a system that
+ * contradicts itself on one screen, and no amount of styling fixes two sources
+ * of truth. One array makes that state unrenderable.
+ *
+ * The + is `accent`, never `primary`. Gold discipline (DESIGN_SYSTEM.md)
+ * allows one primary-gold element per screen, and on this screen the queue's
+ * approve buttons own it. An authoring shortcut must not outrank the work.
+ */
+function StatusBand({ count, onQuickAdd }: { count: number; onQuickAdd: () => void }) {
+  return (
+    <div className="spine flex shrink-0 items-center justify-between gap-4 pb-4">
+      {/* WRAPS, NEVER TRUNCATES. `truncate` here cut the done state to
+          "You're all caught up ..." at 390px — measured on Eve's phone width,
+          where the + leaves the headline 195px. An ellipsis on the one line
+          that tells a parent they are finished is the worst possible place to
+          lose words, and a second line costs nothing on a screen that is
+          otherwise empty. */}
+      <h1
+        className={cn(
+          'display min-w-0 text-3xl leading-tight sm:text-4xl',
+          count > 0 ? 'text-antique' : 'text-green'
+        )}
+      >
+        {count > 0
+          ? `${count} need${count === 1 ? 's' : ''} your yes`
+          : "You're all caught up"}
+      </h1>
+      <Button
+        variant="accent"
+        size="lgResponsive"
+        onClick={onQuickAdd}
+        aria-label="Quick Add"
+        className="shrink-0"
+      >
+        <Plus className="h-5 w-5 shrink-0" />
+        <span className="hidden sm:inline">Add</span>
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * The done state. Deliberately empty of everything else.
+ *
+ * The screen's job when there is no work is to END the interaction, not extend
+ * it — so there are no stats to read, no child cards to inspect and no open
+ * form inviting a parent to find something to do. The book budgets three
+ * minutes a day; this is what the end of those three minutes should look like.
+ */
+function EmptyQueue() {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center">
+      <Card className="flex w-full max-w-md flex-col items-center gap-3 py-12 text-center">
+        <CheckCircle2 className="h-10 w-10 text-green" />
+        <div className="display text-2xl text-text">You&rsquo;re all caught up.</div>
+        <p className="text-text-muted">Nothing needs your approval right now.</p>
+      </Card>
+    </div>
+  )
+}
+
+/**
+ * One card for all three things a parent can be asked to answer.
+ *
+ * The header (avatar, chore, child, value, how long they have waited) is
+ * IDENTICAL across kinds — the origin of a job is irrelevant to the fact that
+ * it needs an answer, the same reasoning that lets ChoreCard render an approved
+ * claim exactly like an assigned chore. Only the action row branches.
+ *
+ * MIS-TAP PROTECTION IS THE VERB PLUS THE MONEY. Each kind has its own
+ * distinct primary label, and a dollar figure appears ONLY on a button that
+ * moves money — no request button ever carries one. So a parent working down a
+ * mixed list can tell what a tap will do without reading the card above it.
+ *
+ * Requests stay `accent` while a finished chore gets `primaryList`, preserving
+ * the existing intent that the dominant action on this screen is approving
+ * completed work, not answering a request.
+ */
+function QueueCard({
+  entry,
+  currency,
+  busy,
+  onFullCredit,
+  onHalfCredit,
+  onNoCredit,
+  onApproveRequest,
+  onDeclineRequest,
+}: {
+  entry: QueueItem
+  currency: string
+  busy: boolean
+  onFullCredit: (a: PendingApproval) => void
+  onHalfCredit: (a: PendingApproval) => void
+  onNoCredit: (a: PendingApproval) => void
+  onApproveRequest: (r: ChoreRequest, isRoster: boolean) => void
+  onDeclineRequest: (r: ChoreRequest) => void
+}) {
+  const { kind, item, waitingSince } = entry
+  const isRoster = kind === 'request-roster'
+  const blurb =
+    kind === 'chore'
+      ? null
+      : isRoster
+        ? 'wants to add this to their regular chores'
+        : 'wants to do this today'
+
+  return (
+    <Card className="flex flex-col gap-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <Avatar member={item.member} />
+        <div className="min-w-0">
+          <div className="display text-lg text-text">{item.chore?.title}</div>
+          <div className="text-sm text-text-muted">
+            {item.member?.display_name} ·{' '}
+            <span className="font-semibold text-antique">
+              {formatCurrency(item.chore?.value ?? 0, currency)}
+            </span>
+            {/* Only a roster request changes what a child is responsible for
+                indefinitely, so only that kind needs the schedule spelled out. */}
+            {isRoster && item.chore?.frequency && (
+              <span className="label-caps ml-2 text-[10px]">
+                {formatFrequency(item.chore.frequency, item.recurrence_dow, item.recurrence_week)}
+              </span>
+            )}
+            <span className="ml-2 inline-flex items-center gap-1">
+              <Clock className="h-3.5 w-3.5" /> {timeAgo(waitingSince)}
+            </span>
+          </div>
+          {blurb && <div className="mt-0.5 text-sm text-text-muted">{blurb}</div>}
+        </div>
+      </div>
+
+      {kind === 'chore' ? (
+        /* Three outcomes, all visible, never a dropdown — but no longer three
+           equal stacked 64px blocks, which cost a third of Eve's phone screen
+           per row. Full Credit takes the full width on a phone and the other
+           two share a row beneath it; `sm:contents` dissolves that pairing
+           wrapper from sm up so all three become direct children of the
+           3-column grid. One markup, both layouts, no duplicated buttons. */
+        <div className="grid shrink-0 gap-2 sm:grid-cols-3">
+          <Button
+            size="lgResponsive"
+            variant="primaryList"
+            onClick={() => onFullCredit(item as PendingApproval)}
+            disabled={busy}
+          >
+            {/* The figure is on the button, not only in the meta line above,
+                for the same reason Half carries its own: a parent must be able
+                to read what they are authorising on the control they are about
+                to tap. Both come from the chore's value via the same source the
+                write uses, so they cannot drift. */}
+            <Check className="h-5 w-5 shrink-0" /> Full Credit (
+            {formatCurrency(item.chore?.value ?? 0, currency)})
+          </Button>
+          <div className="grid grid-cols-2 gap-2 sm:contents">
+            <Button
+              size="lgResponsive"
+              variant="accent"
+              onClick={() => onHalfCredit(item as PendingApproval)}
+              disabled={busy}
+              title="Completed after a second reminder"
+            >
+              <Percent className="h-5 w-5 shrink-0" />
+              Half ({formatCurrency(halfCreditAmount(item as PendingApproval), currency)})
+            </Button>
+            <Button
+              size="lgResponsive"
+              variant="danger"
+              onClick={() => onNoCredit(item as PendingApproval)}
+              disabled={busy}
+              title="Completed only after multiple reminders"
+            >
+              <X className="h-5 w-5 shrink-0" /> No Credit
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2">
+          <Button
+            size="lgResponsive"
+            variant="accent"
+            onClick={() => onApproveRequest(item as ChoreRequest, isRoster)}
+            disabled={busy}
+          >
+            <Check className="h-5 w-5 shrink-0" /> {isRoster ? 'Add to roster' : 'Yes — go ahead'}
+          </Button>
+          <Button
+            size="lgResponsive"
+            variant="danger"
+            onClick={() => onDeclineRequest(item as ChoreRequest)}
+            disabled={busy}
+          >
+            <X className="h-5 w-5 shrink-0" /> {isRoster ? 'Decline' : 'Not today'}
+          </Button>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/**
+ * Quick Add, on demand.
+ *
+ * It used to be a permanently open five-tab form in the dashboard's right
+ * column. Five labelled tabs on an always-visible form read as five jobs a
+ * parent could be doing every time they open the app, which is the opposite of
+ * what a three-minute daily screen should imply. Behind a +, the capability is
+ * one tap away and the obligation is gone.
+ *
+ * THE THREE READS IT NEEDS HAPPEN HERE, not on dashboard load — that is most of
+ * the 8 -> 2 reduction. They fire on open rather than on mount, so a parent who
+ * only ever approves chores never pays for them at all.
+ */
+function QuickAddModal({
+  open,
+  onClose,
+  familyChildren,
+  currency,
+  familyId,
+  assignedBy,
+  initialTab,
+  onDone,
+}: {
+  open: boolean
+  onClose: () => void
+  /** NOT named `children`: React treats that prop specially on any component. */
+  familyChildren: FamilyMember[]
+  currency: string
+  familyId: string
+  assignedBy: string
+  initialTab?: string | null
+  onDone: () => Promise<unknown>
+}) {
+  const [chores, setChores] = useState<Chore[]>([])
+  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [roster, setRoster] = useState<RosterEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open || !familyId) return
+    let cancelled = false
+    setLoading(true)
+    void (async () => {
+      try {
+        const [ch, ex, ros] = await Promise.all([
+          getFamilyChores(familyId),
+          getFamilyExpenses(familyId),
+          // Powers the daily-total readout: what a child's day is already
+          // worth before this assignment lands on it.
+          getRoster(),
+        ])
+        if (cancelled) return
+        setChores(ch)
+        setExpenses(ex)
+        setRoster(ros)
+        setError(null)
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load Quick Add.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, familyId])
+
+  return (
+    <Modal open={open} onClose={onClose} title="Quick Add" size="wide">
+      {loading ? (
+        <div className="flex items-center justify-center gap-3 py-16">
+          <Loader2 className="h-8 w-8 animate-spin text-antique" />
+          <span className="text-text-muted">Loading…</span>
+        </div>
+      ) : error ? (
+        <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">
+          {error}
+        </div>
+      ) : (
+        <QuickAdd
+          children={familyChildren}
+          chores={chores}
+          expenses={expenses}
+          roster={roster}
+          currency={currency}
+          familyId={familyId}
+          assignedBy={assignedBy}
+          initialTab={initialTab}
+          onDone={onDone}
+        />
+      )}
+    </Modal>
   )
 }
 
@@ -460,50 +602,6 @@ const REMINDER_REJECT_NOTE = 'Task completed after multiple reminders'
  */
 function halfCreditAmount(a: PendingApproval): number {
   return splitHalfCredit(a.chore?.value).creditCents / 100
-}
-
-/**
- * A child's savings goal on the parent's balance card: what they are working
- * toward, without navigating anywhere. Deliberately supplementary — one line of
- * text and a 4px rule, so it never competes with the balance figure above it.
- *
- * Renders nothing at all when there is no active goal, so a card for a child
- * who has not set one is byte-identical to what it was before this feature.
- */
-function GoalPreview({
-  goal,
-  balance,
-  currency,
-}: {
-  goal: Milestone | undefined
-  balance: number
-  currency: string
-}) {
-  if (!goal) return null
-  const progress = withGoalProgress(goal, balance)
-  return (
-    <div className="mt-3 border-t border-line pt-3">
-      <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="min-w-0 truncate text-text-muted">
-          <span className="text-text">{goal.title}</span>
-        </span>
-        <span className="shrink-0 text-text-muted">
-          <span className="font-semibold text-antique">
-            {formatCurrency(progress.savedAmount, currency)}
-          </span>{' '}
-          of {formatCurrency(goal.target_amount, currency)}
-        </span>
-      </div>
-      {/* 4px, squared, no radius token: parent surfaces are squared throughout
-          and a rounded bar would read as a child-view element. */}
-      <div className="mt-1.5 h-1 w-full overflow-hidden bg-deep">
-        <div
-          className={cn('h-full', progress.progressPct >= 100 ? 'bg-green' : 'bg-antique')}
-          style={{ width: `${progress.progressPct}%` }}
-        />
-      </div>
-    </div>
-  )
 }
 
 function Avatar({ member }: { member: { display_name: string | null; avatar_url: string | null } | null }) {
@@ -600,19 +698,19 @@ function QuickAdd({
     initialTab === 'character' ? 'character' : 'chore'
   )
 
-  // Arriving from Family Week, bring the panel into view — it sits low in a
-  // scrolling right-hand column, so pre-selecting the tab without scrolling
-  // would look like the link did nothing.
-  const panelRef = useRef<HTMLElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (initialTab !== 'character') return
-    panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    // The five tabs scroll horizontally at narrow widths, and 'Caught Being
-    // Great' is the LAST of them — so without this the strip still reads
-    // "Assign Chore / Add Expense / Direct Award" while the form below is
-    // already the recognition one. Correct content under a tab bar showing a
-    // different tab reads as a bug. `inline` only, so it cannot fight the
-    // vertical scroll above.
+    // The vertical scrollIntoView that used to sit here is GONE. It existed
+    // because this panel sat low in a scrolling right-hand column, so
+    // pre-selecting a tab without scrolling looked like the link did nothing.
+    // Inside a modal there is nothing to scroll to — the panel IS the view.
+    //
+    // The HORIZONTAL scroll still matters: the five tabs scroll sideways at
+    // narrow widths and 'Caught Being Great' is the LAST of them, so without
+    // this the strip reads "Assign Chore / Add Expense / Direct Award" while
+    // the form below is already the recognition one. Correct content under a
+    // tab bar showing a different tab reads as a bug.
     panelRef.current
       ?.querySelector('[data-tab="character"]')
       ?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
@@ -919,9 +1017,11 @@ function QuickAdd({
   ] as const
 
   return (
-    <section ref={panelRef}>
-      <h2 className="mb-3 text-2xl">Quick Add</h2>
-      <Card className="flex flex-col gap-3">
+    /* No heading and no Card of its own any more: this now renders INSIDE a
+       Modal that already supplies the panel and the "Quick Add" title, and a
+       second copy of either would read as a nested dialog. The body below is
+       otherwise untouched. */
+    <div ref={panelRef} className="flex flex-col gap-3">
         {/* Five tabs do not fit at 375px. They scroll horizontally instead of
             wrapping or squeezing: wrapping made the strip two rows tall and
             pushed the form off screen, and squeezing broke the 48px target.
@@ -1288,145 +1388,9 @@ function QuickAdd({
           </>
         )}
 
-        {done && <p className="text-center text-sm text-green">{done}</p>}
-        {error && <p className="text-center text-sm text-danger">{error}</p>}
-      </Card>
-    </section>
-  )
-}
-
-/**
- * The claim-request queue — Path 1 and Path 2 side by side.
- *
- * COLLAPSIBLE, AND ABSENT WHEN EMPTY. Same pattern as Loan History: a family
- * that never uses the claim library never sees this section at all, so the
- * dashboard's one job — what needs approval right now — is not diluted by a
- * permanently empty container.
- *
- * The two paths are separated because they are different decisions, not two
- * flavours of one. Approving a one-time request puts a chore on a child's list
- * for today. Approving a roster request changes what that child is
- * responsible for indefinitely. A parent skimming a tablet must not confuse
- * the two, so they never share a list.
- */
-function ChoreRequests({
-  requests,
-  currency,
-  busyId,
-  onApprove,
-  onDecline,
-}: {
-  requests: ChoreRequestQueue
-  currency: string
-  busyId: string | null
-  onApprove: (r: ChoreRequest, isRoster: boolean) => void
-  onDecline: (r: ChoreRequest) => void
-}) {
-  const total = requests.oneTime.length + requests.roster.length
-  if (total === 0) return null
-
-  return (
-    <div className="mt-6 shrink-0">
-      <CollapsibleSection title="Chore Requests" meta={`${total}`} maxHeight={380}>
-        <div className="flex flex-col gap-5">
-          {requests.oneTime.length > 0 && (
-            <div>
-              <h3 className="label-caps mb-2 text-[10px] text-text-muted">One-time requests</h3>
-              <div className="flex flex-col gap-2">
-                {requests.oneTime.map((r) => (
-                  <RequestRow
-                    key={r.id}
-                    request={r}
-                    currency={currency}
-                    busy={busyId === r.id}
-                    blurb="wants to do this today"
-                    approveLabel="Approve"
-                    onApprove={() => onApprove(r, false)}
-                    onDecline={() => onDecline(r)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {requests.roster.length > 0 && (
-            <div>
-              <h3 className="label-caps mb-2 text-[10px] text-text-muted">Roster requests</h3>
-              <div className="flex flex-col gap-2">
-                {requests.roster.map((r) => (
-                  <RequestRow
-                    key={r.id}
-                    request={r}
-                    currency={currency}
-                    busy={busyId === r.id}
-                    blurb="wants to add this to their regular chores"
-                    approveLabel="Add to Roster"
-                    showFrequency
-                    onApprove={() => onApprove(r, true)}
-                    onDecline={() => onDecline(r)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </CollapsibleSection>
+      {done && <p className="text-center text-sm text-green">{done}</p>}
+      {error && <p className="text-center text-sm text-danger">{error}</p>}
     </div>
-  )
-}
-
-function RequestRow({
-  request,
-  currency,
-  busy,
-  blurb,
-  approveLabel,
-  showFrequency,
-  onApprove,
-  onDecline,
-}: {
-  request: ChoreRequest
-  currency: string
-  busy: boolean
-  blurb: string
-  approveLabel: string
-  showFrequency?: boolean
-  onApprove: () => void
-  onDecline: () => void
-}) {
-  return (
-    <Card className="flex flex-col gap-3">
-      <div className="flex min-w-0 items-center gap-3">
-        <Avatar member={request.member} />
-        <div className="min-w-0">
-          <div className="display text-lg text-text">{request.chore?.title}</div>
-          <div className="text-sm text-text-muted">
-            {request.member?.display_name} ·{' '}
-            <span className="font-semibold text-antique">
-              {formatCurrency(request.chore?.value ?? 0, currency)}
-            </span>
-            {showFrequency && request.chore?.frequency && (
-              <span className="label-caps ml-2 text-[10px]">
-                {formatFrequency(request.chore.frequency, request.recurrence_dow, request.recurrence_week)}
-              </span>
-            )}
-          </div>
-          <div className="mt-0.5 text-sm text-text-muted">{blurb}</div>
-        </div>
-      </div>
-      {/* Two outcomes, each its own 64px target — no dropdown, same discipline
-          as the approvals queue above. Antique rather than primary gold: the
-          dominant action on this screen is approving finished work, not
-          answering a request. */}
-      <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2">
-        <Button size="lg" variant="accent" className="px-3" onClick={onApprove} disabled={busy}>
-          <Check className="h-5 w-5 shrink-0" /> {approveLabel}
-        </Button>
-        <Button size="lg" variant="danger" className="px-3" onClick={onDecline} disabled={busy}>
-          <X className="h-5 w-5 shrink-0" /> Decline
-        </Button>
-      </div>
-    </Card>
   )
 }
 
