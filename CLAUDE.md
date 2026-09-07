@@ -1692,6 +1692,102 @@ individual balances remain on each child's dashboard. Session A also leaves the
 64px sidebar in place at 390px, so the phone gains the vertical reclaim only —
 the horizontal 64px is Session B's.
 
+## SHIPPED 2026-09-07 — parent dashboard Session B (navigation and structure)
+
+The four changes Session A deferred. Nothing in Dashboard.tsx was touched.
+
+### PARENT NAVIGATION IS TWO TIERS, NOT FOUR PEERS
+
+ParentLayout renders Home alone at the top, then a 1px `bg-antique/20` rule,
+then an "Occasional" label, then Family Week / Setup / Settings. Bottom stays
+pinned: "Signed in as <name>" and Switch user.
+
+Four flat items all read as "you should visit this", which was a large part of
+why the parent interface implied a much bigger daily commitment than the book's
+two-to-three minutes. Home is where the app opens and where the work is.
+
+Home is still a NavLink, not a static label, because it is also the way BACK
+from the other three — the active location when you are on it, a destination
+only when you are not.
+
+AT 390px THE RULE CARRIES THE WHOLE MESSAGE. The sidebar is 64px, so the
+"Occasional" label is `hidden sm:block` and computes to display:none there;
+verified 2026-09-07. The divider alone still says "these are not the same kind
+of thing as the one above", which is enough. There is NO overflow/⋯ menu — the
+bottom items stay pinned in the rail and render icon-only. Do not add one
+without a deliberate decision; it was explicitly declined as unrequested scope.
+
+### "SETUP" IS A LABEL. THE ROUTE IS STILL /parent/chores
+
+Manage -> Setup everywhere it was user-visible: the nav item, the page h1, and
+the "review them on the Setup screen" line in Family Week's System Health.
+
+THERE IS NO /parent/manage ROUTE AND THERE NEVER WAS. Management.tsx has always
+been mounted at `/parent/chores` (App.tsx). Renaming the path would buy nothing
+and risks a dead link, so it was left alone. The component and file are still
+called Management — internal only, not worth the churn.
+
+Why the rename at all: "Manage" is a verb in the present continuous and reads
+as an ongoing duty. "Setup" reads as something already done. Nothing on that
+screen is daily work.
+
+### ANALYTICS LIVES ON FAMILY WEEK NOW
+
+Setup went 6 tabs -> 5. Analytics is a collapsed CollapsibleSection at the
+bottom of Family Week, below System Health.
+
+IT MOVED WITH ZERO PLUMBING. AnalyticsTab takes no props — it reads `family`
+and `members` straight off useAuth and owns its own rangeKey state. Management
+rendered it as a bare `{tab === 'analytics' && <AnalyticsTab />}`, so its
+deferred loading came from CONDITIONAL MOUNTING, not from a shared loader.
+
+CollapsibleSection keeps its body UNMOUNTED until first opened, so that
+deferral is preserved exactly — and the same mechanism stops Recharts measuring
+itself inside a zero-height box, which is why the property exists in the first
+place. Verified 2026-09-07: no `.recharts-wrapper` in the DOM until the section
+is opened.
+
+THE DATE RANGE IS SCOPED FOR FREE. Family Week has no range filtering of its
+own — it makes one getFamilyWeek() call anchored on new Date() with no range
+parameter — so AnalyticsPanel's pills cannot reach it. Proven rather than
+assumed on 2026-09-07: switching to All Time moved the analytics figures
+(Cuddles' completion 6% -> 8%, longest streaks 5d -> 7d and 1d -> 3d) while the
+week header, child cards and Family Economy section stayed BYTE-IDENTICAL to a
+snapshot taken before the switch. A range test that changes nothing anywhere
+proves nothing; check that the analytics numbers actually moved.
+
+### FAMILY ECONOMY TOTAL — DERIVED, ZERO NEW READS
+
+`FamilyWeekData.familyBalance` is the sum of every child's current balance,
+rendered as the FIRST of four cards in Family Economy (antique gold — a
+reporting screen has no dominant action for primary gold to belong to). It is
+first because it is the only one of the four describing NOW; earned and spent
+are the week's history.
+
+It sums the `children` rows getFamilyWeek is ALREADY handed. No query, no await.
+This is where the total went when Session A deleted the dashboard stat row.
+Verified 2026-09-07: 12.42 + 19.25 = 31.67, screen read $31.67, and
+family_members was fetched exactly twice on a Family Week load — one
+getActiveMembers call under StrictMode's double-invoke, with no balance-shaped
+query anywhere.
+
+Stat's `tone` is a LOOKUP, not a chained ternary. cn() has no tailwind-merge, so
+exactly one colour class may be emitted; adding a third tone by chaining `?:` is
+how two end up in the class list with stylesheet order deciding.
+
+### KNOWN INCONSISTENCY, NOT FIXED — two pending-approval counts
+
+Family Week's "Pending approvals" card counts COMPLETED CHORES ONLY, while the
+dashboard status band counts the merged queue (completed chores + both request
+paths). Observed live 2026-09-07: Family Week said 1, the dashboard said 27.
+Both are internally correct and neither is wrong about what it measures, but
+they are the same words over two different numbers on two screens — the class of
+contradiction Session A existed to remove.
+
+NOT changed here because it is outside Session B's four agreed changes and the
+fix is a product decision: either Family Week adopts getApprovalQueue().length,
+or the card is relabelled to say what it actually counts. Decide before launch.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch

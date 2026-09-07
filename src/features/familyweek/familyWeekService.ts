@@ -108,6 +108,18 @@ export interface FamilyWeekData {
   children: ChildWeek[]
   totalEarned: number
   totalSpent: number
+  /**
+   * What the family holds RIGHT NOW — the sum of every child's current
+   * balance. Not a weekly figure like the two above it, which is exactly why
+   * it earns its place: earned and spent are history, this is state.
+   *
+   * DERIVED, NEVER READ. It sums the `children` rows this function is already
+   * handed, so it costs ZERO additional queries. It moved here when the parent
+   * dashboard's stat row was deleted in Session A and the figure had no home
+   * left; a reporting screen is the right place for it, and a read of its own
+   * would have been the wrong way to get it.
+   */
+  familyBalance: number
   pendingApprovals: number
   /** Empty when none were given — the section hides, like Loan History. */
   recognitions: WeekRecognition[]
@@ -209,6 +221,8 @@ export async function getFamilyWeek(
     children: childWeeks,
     totalEarned: childWeeks.reduce((sum, c) => sum + c.earned, 0),
     totalSpent,
+    // Summed off the `children` rows this function was handed. No query.
+    familyBalance: children.reduce((sum, c) => sum + (c.balance ?? 0), 0),
     pendingApprovals: pending.length,
     recognitions: deriveWeekRecognitions(approvedThisWeek, children, allMembers),
     health: {

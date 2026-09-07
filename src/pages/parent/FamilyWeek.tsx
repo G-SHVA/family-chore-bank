@@ -14,7 +14,8 @@ import {
 } from '@/features/chores/choreService'
 import { Card } from '@/components/ui/Card'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
-import { formatCurrency } from '@/lib/utils'
+import AnalyticsPanel from './manage/AnalyticsTab'
+import { cn, formatCurrency } from '@/lib/utils'
 
 /**
  * Icon and label per recognition. The parent-facing counterpart to the child
@@ -198,7 +199,16 @@ export default function FamilyWeek() {
       {/* Section 2 — Family Economy */}
       <section>
         <h2 className="mb-4 text-2xl">Family Economy This Week</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* FIRST, because it is the only one of the four that describes NOW.
+              Earned and spent are the week's history; this is what the family
+              actually holds. Antique gold, not primary — a reporting screen has
+              no dominant action for primary gold to belong to. */}
+          <Stat
+            label="Family economy"
+            value={formatCurrency(data.familyBalance, currency)}
+            tone="antique"
+          />
           <Stat label="Total family earned" value={formatCurrency(data.totalEarned, currency)} tone="green" />
           <Stat label="Total family spent" value={formatCurrency(data.totalSpent, currency)} tone="danger" />
           {/* The one link off this screen. A pending count with no way to act on
@@ -335,13 +345,37 @@ export default function FamilyWeek() {
                 {data.health.idleChores.length > IDLE_PREVIEW && (
                   <p className="mt-2 text-lg text-text-muted">
                     and {data.health.idleChores.length - IDLE_PREVIEW} more — review them on the
-                    Manage screen.
+                    Setup screen.
                   </p>
                 )}
               </>
             )}
           </div>
         </Card>
+      </CollapsibleSection>
+
+      {/* Section 6 — Analytics, collapsed.
+          It used to be the sixth tab on the Setup screen, which put a
+          weekly-review surface inside a configuration area. This is the
+          weekly-review screen, so it lives here now.
+
+          COLLAPSED, AND THAT IS LOAD-BEARING TWICE OVER. CollapsibleSection
+          keeps its body UNMOUNTED until first opened, so (1) none of
+          Analytics' three queries fire unless a parent actually asks for them —
+          preserving exactly the deferred loading the old conditional tab
+          render gave it, and (2) Recharts never measures itself inside a
+          zero-height box, which it does not recover from.
+
+          maxHeight is generous because this is charts rather than a list: the
+          section scrolls internally, so it cannot push Conversation Starters —
+          the part read aloud at the table — off the end of a long page.
+
+          Its date-range pills are AnalyticsPanel's own useState and are read by
+          nothing outside it. Family Week's own sections come from one
+          getFamilyWeek() call anchored on new Date() with no range parameter,
+          so the range here cannot reach them. Scoping was free. */}
+      <CollapsibleSection title="Analytics" maxHeight={720}>
+        <AnalyticsPanel />
       </CollapsibleSection>
     </div>
   )
@@ -376,13 +410,15 @@ function Stat({
 }: {
   label: string
   value: string
-  tone: 'green' | 'danger'
+  tone: 'green' | 'danger' | 'antique'
 }) {
+  // A lookup, not a nested ternary: cn() has no tailwind-merge, so exactly one
+  // colour class must be emitted. Adding a third tone by chaining `?:` is how
+  // two of them end up in the class list with stylesheet order deciding.
+  const toneClass = { green: 'text-green', danger: 'text-danger', antique: 'text-antique' }[tone]
   return (
     <Card>
-      <div className={`display text-4xl ${tone === 'green' ? 'text-green' : 'text-danger'}`}>
-        {value}
-      </div>
+      <div className={cn('display text-4xl', toneClass)}>{value}</div>
       <div className="label-caps mt-2 text-[11px] text-text-muted">{label}</div>
     </Card>
   )

@@ -27,12 +27,40 @@ export function ParentLayout() {
     return <Navigate to="/" replace />
   }
 
-  const items: NavItem[] = [
-    { to: '/parent/dashboard', label: 'Dashboard', icon: LayoutDashboard, end: true },
-    { to: '/parent/chores', label: 'Manage', icon: ClipboardList },
+  /**
+   * TWO TIERS, NOT FOUR PEERS.
+   *
+   * Four flat nav items all read as "you should visit this", which is most of
+   * why the parent interface implied a much larger daily commitment than the
+   * two-to-three minutes the book budgets. Home is where the app opens and
+   * where the work is; everything else is occasional and is styled to say so.
+   *
+   * Home stays a NavLink rather than a static label because it still has to
+   * work as the way BACK from the other three — it is the active location when
+   * you are on it, and a destination only when you are not.
+   */
+  const home: NavItem = {
+    to: '/parent/dashboard',
+    label: 'Home',
+    icon: LayoutDashboard,
+    end: true,
+  }
+  const occasional: NavItem[] = [
     { to: '/parent/week', label: 'Family Week', icon: CalendarDays },
+    // Route stays /parent/chores. "Setup" is the LABEL only — renaming the
+    // path would break nothing visible but buys nothing either, and every
+    // link in the app already points here.
+    { to: '/parent/chores', label: 'Setup', icon: ClipboardList },
     { to: '/parent/settings', label: 'Settings', icon: Settings },
   ]
+
+  const linkClass = ({ isActive }: { isActive: boolean }) =>
+    cn(
+      'label-caps flex min-h-touch items-center justify-center gap-3 rounded-input border-l-2 text-xs sm:justify-start sm:px-4',
+      isActive
+        ? 'border-antique bg-wash text-antique'
+        : 'border-transparent text-text-muted hover:bg-wash hover:text-text'
+    )
 
   function handleExit() {
     exitToPicker()
@@ -51,20 +79,26 @@ export function ParentLayout() {
         </div>
 
         <nav className="flex flex-1 flex-col gap-1 p-2 sm:p-4">
-          {items.map((item) => (
+          <NavLink to={home.to} end={home.end} title={home.label} className={linkClass}>
+            <home.icon className="h-6 w-6 shrink-0" />
+            <span className="hidden sm:inline">{home.label}</span>
+          </NavLink>
+
+          {/* The tier boundary. At 64px the label has nowhere to go, so the
+              rule carries the whole message on a phone — which is enough:
+              "these are not the same kind of thing as the one above". */}
+          <div className="my-3 h-px shrink-0 bg-antique/20" aria-hidden="true" />
+          <div className="label-caps hidden px-4 pb-2 text-[10px] tracking-[0.18em] text-text-muted sm:block">
+            Occasional
+          </div>
+
+          {occasional.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.end}
               title={item.label}
-              className={({ isActive }) =>
-                cn(
-                  'label-caps flex min-h-touch items-center justify-center gap-3 rounded-input border-l-2 text-xs sm:justify-start sm:px-4',
-                  isActive
-                    ? 'border-antique bg-wash text-antique'
-                    : 'border-transparent text-text-muted hover:bg-wash hover:text-text'
-                )
-              }
+              className={linkClass}
             >
               <item.icon className="h-6 w-6 shrink-0" />
               <span className="hidden sm:inline">{item.label}</span>
