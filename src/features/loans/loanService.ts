@@ -26,15 +26,57 @@ export interface Loan {
   balance_remaining: number
   payment_day: number
   expense_id: string | null
-  status: 'active' | 'paid_off' | 'forgiven'
+  status: LoanStatus
   created_by: string | null
   created_at: string | null
+  /** Doubles as resolved_at: forgiveness and decline both stamp it. */
   paid_off_at: string | null
+  /** Parent's reason for a decline. NULL on every other status. */
+  decline_note: string | null
 }
+
+/**
+ * Five statuses since the child-request flow shipped.
+ *
+ *   requested -> the child asked; the parent has not answered
+ *   active    -> a real debt, the only status process_loan_payments() charges
+ *   paid_off  -> repaid in full
+ *   forgiven  -> cancelled by a parent; balance_remaining deliberately NOT zeroed
+ *   declined  -> the parent said no, with a reason in decline_note
+ */
+export type LoanStatus = 'active' | 'paid_off' | 'forgiven' | 'requested' | 'declined'
+
+/**
+ * What the parent's Loans tab shows: everything EXCEPT an unanswered request.
+ *
+ * Exists so that every read states what it wants POSITIVELY. Before the
+ * request flow, two call sites classified loans by negation --
+ * `l.status !== 'active'` meant "resolved" -- which was correct only because
+ * no other status existed. Widening the constraint would have made a pending
+ * request render inside Loan History, styled as a completed loan. Adding a
+ * status must never silently reclassify a row, so the negations are gone.
+ *
+ * 'declined' IS INCLUDED, and the distinction is the point: 'requested' is an
+ * OPEN QUESTION and belongs in the approval queue, where the terms can still
+ * be set. 'declined' is a TERMINAL DECISION a parent already made -- it is
+ * history, and hiding it would mean the only record of a refusal lived on the
+ * child's dashboard for 48 hours and then nowhere at all.
+ *
+ * Excluding 'requested' is the load-bearing half. Keep it.
+ */
+export const LOANS_TAB_STATUSES: LoanStatus[] = [
+  'active',
+  'paid_off',
+  'forgiven',
+  'declined',
+]
+
+/** Ended, one way or another. A request that was declined counts. */
+export const RESOLVED_LOAN_STATUSES: LoanStatus[] = ['paid_off', 'forgiven', 'declined']
 
 /** Every column, explicitly. `select('*')` invites surprises as the table grows. */
 const LOAN_COLUMNS =
-  'id, family_id, member_id, description, principal, monthly_payment, balance_remaining, payment_day, expense_id, status, created_by, created_at, paid_off_at'
+  'id, family_id, member_id, description, principal, monthly_payment, balance_remaining, payment_day, expense_id, status, created_by, created_at, paid_off_at, decline_note'
 
 /**
  * How long a resolved loan keeps being announced to the child. Matches the
@@ -114,25 +156,45 @@ export async function getRecentlyResolvedLoan(memberId: string): Promise<Loan | 
  */
 export interface ChildLoanState {
   active: Loan | null
-  /** Paid off or forgiven within RESOLUTION_WINDOW_HOURS. */
+  /** An unanswered request. At most one, held by idx_loans_one_requested_per_member. */
+  requested: Loan | null
+  /** Paid off, forgiven or DECLINED within RESOLUTION_WINDOW_HOURS. */
   resolved: Loan | null
 }
 
+/**
+ * THREE-WAY, AND EVERY BRANCH MATCHES A STATUS BY NAME.
+ *
+ * This used to be two branches with the second written as `!== 'active'`. That
+ * was correct only while three statuses existed. Adding 'requested' to the
+ * constraint would have made an unanswered request satisfy the negation and
+ * render as a RESOLVED loan -- the child would be told their request was paid
+ * off. The fix is not a longer negation but no negation at all.
+ *
+ * Still ONE round trip, and every arm of the OR is bounded: 'active' and
+ * 'requested' by status (both capped at one row per child by partial unique
+ * indexes), the resolved arm by a 48-hour date floor. Nothing here grows with
+ * history, so the child dashboard's 2-read budget is unchanged.
+ */
 export async function getChildLoanState(memberId: string): Promise<ChildLoanState> {
   const since = new Date(Date.now() - RESOLUTION_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
   const { data, error } = await supabase
     .from('loans')
     .select(LOAN_COLUMNS)
     .eq('member_id', memberId)
-    .or(`status.eq.active,and(status.in.(paid_off,forgiven),paid_off_at.gte.${since})`)
+    .or(
+      `status.eq.active,status.eq.requested,` +
+        `and(status.in.(${RESOLVED_LOAN_STATUSES.join(',')}),paid_off_at.gte.${since})`
+    )
     .order('created_at', { ascending: false })
     .limit(10)
   if (error) throw error
   const rows = (data ?? []) as Loan[]
   return {
     active: rows.find((l) => l.status === 'active') ?? null,
+    requested: rows.find((l) => l.status === 'requested') ?? null,
     // Newest first already; a child realistically has at most one.
-    resolved: rows.find((l) => l.status !== 'active') ?? null,
+    resolved: rows.find((l) => RESOLVED_LOAN_STATUSES.includes(l.status)) ?? null,
   }
 }
 
@@ -141,7 +203,10 @@ export async function getChildLoanState(memberId: string): Promise<ChildLoanStat
  * ------------------------------------------------------------------ */
 
 export interface LoanWithMember extends Loan {
-  member: { display_name: string | null } | null
+  // avatar_url is carried because the approval queue renders the same Avatar
+  // component every other queue card uses. The parent Loans tab ignores it;
+  // one shape for both consumers is cheaper than two near-identical types.
+  member: { display_name: string | null; avatar_url: string | null } | null
 }
 
 /**
@@ -156,8 +221,15 @@ const FAMILY_LOAN_LIMIT = 200
 export async function getFamilyLoans(familyId: string): Promise<LoanWithMember[]> {
   const { data, error } = await supabase
     .from('loans')
-    .select(`${LOAN_COLUMNS}, member:family_members!loans_member_id_fkey(display_name)`)
+    .select(`${LOAN_COLUMNS}, member:family_members!loans_member_id_fkey(display_name,avatar_url)`)
     .eq('family_id', familyId)
+    // EXPLICIT, and load-bearing. This read had no status filter at all, so
+    // once 'requested' existed an UNANSWERED request would have appeared in
+    // the parent's Loans tab -- and, because that screen split on
+    // `!== 'active'`, inside Loan History styled as a completed loan. An open
+    // question belongs in the approval queue. A declined one is history and
+    // stays here; see LOANS_TAB_STATUSES.
+    .in('status', LOANS_TAB_STATUSES)
     .order('created_at', { ascending: false })
     .limit(FAMILY_LOAN_LIMIT)
   if (error) throw error
@@ -249,6 +321,187 @@ export async function createLoan(input: NewLoanInput): Promise<Loan> {
     .single()
   if (error) throw loanError(error, 'Could not create the loan')
   return data as Loan
+}
+
+/* ------------------------------------------------------------------ *
+ * Child-initiated loan requests
+ * ------------------------------------------------------------------ */
+
+export interface LoanRequestInput {
+  familyId: string
+  memberId: string
+  description: string
+  principal: number
+  monthlyPayment: number
+}
+
+/**
+ * A child asks for a loan. NO EXPENSE ROW, NO MONEY, NO DEBT.
+ *
+ * The row is a REQUEST, not a loan: expense_id stays NULL, which is the second
+ * independent reason process_loan_payments() can never charge it (the first is
+ * its explicit `WHERE l.status = 'active'`, the third is that it CONTINUEs on a
+ * null expense_id). The expenses row is created only when a parent approves,
+ * by approveLoanRequest below -- so a request a parent ignores costs the
+ * database exactly one row and never touches the money path.
+ *
+ * balance_remaining is seeded to the principal so the row satisfies the
+ * table's own CHECK constraints while requested; approval recomputes it from
+ * the parent's figure, which may differ from what the child asked for.
+ *
+ * created_by is the CHILD's member id. It references family_members(id) --
+ * the app-level record of who authored the row, not a security boundary,
+ * exactly as with milestones.created_by_member: the kiosk runs one shared
+ * parent session and child identity is app state.
+ */
+export async function requestLoan(input: LoanRequestInput): Promise<Loan> {
+  const { data, error } = await supabase
+    .from('loans')
+    .insert({
+      family_id: input.familyId,
+      member_id: input.memberId,
+      description: input.description.trim(),
+      principal: input.principal,
+      monthly_payment: input.monthlyPayment,
+      balance_remaining: input.principal,
+      payment_day: 5,
+      expense_id: null,
+      status: 'requested',
+      created_by: input.memberId,
+    })
+    .select(LOAN_COLUMNS)
+    .single()
+  if (error) throw loanError(error, 'Could not send the loan request')
+  return data as Loan
+}
+
+/**
+ * Every unanswered loan request in the family, for the parent approval queue.
+ *
+ * TRUNCATION SAFETY. Bounded by status alone, and 'requested' is transient by
+ * construction: a parent either approves the row (it becomes 'active') or
+ * declines it (it becomes 'declined'), and a partial unique index caps each
+ * child at one outstanding request. This read therefore cannot grow with
+ * history the way an instance-row read does -- its ceiling is the number of
+ * children in the family. The limit is a payload guard, not the correctness
+ * mechanism, exactly as with the claim library's four doors.
+ */
+const LOAN_REQUEST_LIMIT = 50
+
+export async function getLoanRequests(familyId: string): Promise<LoanWithMember[]> {
+  const { data, error } = await supabase
+    .from('loans')
+    .select(`${LOAN_COLUMNS}, member:family_members!loans_member_id_fkey(display_name,avatar_url)`)
+    .eq('family_id', familyId)
+    .eq('status', 'requested')
+    .order('created_at', { ascending: true })
+    .limit(LOAN_REQUEST_LIMIT)
+  if (error) throw error
+  return (data ?? []) as unknown as LoanWithMember[]
+}
+
+export interface ApproveLoanInput {
+  loanId: string
+  familyId: string
+  description: string
+  principal: number
+  monthlyPayment: number
+  paymentDay: number
+}
+
+/**
+ * Approve a request ON THE PARENT'S TERMS, not the child's.
+ *
+ * The child's figures are a STARTING POINT the parent edits, so every value
+ * here comes from the review modal rather than the stored row. This is the
+ * negotiation the book describes; a one-tap approve of the child's own numbers
+ * would remove the only moment in the flow where terms are actually discussed.
+ *
+ * ORDER MATTERS, and it mirrors createLoan for the same reason: the expenses
+ * row is created FIRST so expense_id is populated in the same update that sets
+ * status = 'active'. A loan that went active with a null expense_id would be
+ * skipped by process_loan_payments() forever and silently never charge.
+ *
+ * The update is guarded with .eq('status','requested') so two parents on two
+ * tablets cannot both approve the same request -- the second matches no row.
+ * That guard, not the unique index, is what makes this safe: once the row is
+ * 'active' it has left idx_loans_one_requested_per_member entirely.
+ */
+export async function approveLoanRequest(input: ApproveLoanInput): Promise<void> {
+  const description = input.description.trim()
+
+  const { data: expense, error: expenseError } = await supabase
+    .from('expenses')
+    .insert({
+      family_id: input.familyId,
+      title: `${description} — loan payment`,
+      amount: input.monthlyPayment,
+      category: LOAN_PAYMENT_CATEGORY,
+      is_template: false,
+    })
+    .select('id')
+    .single()
+  if (expenseError) throw loanError(expenseError, 'Could not set up the loan payment')
+
+  const { data, error } = await supabase
+    .from('loans')
+    .update({
+      description,
+      principal: input.principal,
+      monthly_payment: input.monthlyPayment,
+      balance_remaining: input.principal,
+      payment_day: input.paymentDay,
+      expense_id: expense.id,
+      status: 'active',
+    })
+    .eq('id', input.loanId)
+    .eq('status', 'requested')
+    .select('id')
+  if (error) throw loanError(error, 'Could not approve the loan')
+  if (!data || data.length === 0) {
+    throw new Error('That request was already answered. Refresh to see its current state.')
+  }
+}
+
+/**
+ * Decline a request, with the parent's reason.
+ *
+ * THE NOTE IS REQUIRED, unlike a chore rejection, and the asymmetry is
+ * deliberate: a rejected chore is one missed credit the child can retry
+ * tomorrow, while a declined loan is a financial answer they cannot act on
+ * without knowing why. There is no notifications table, so decline_note IS the
+ * message.
+ *
+ * paid_off_at is stamped because it doubles as resolved_at in this schema --
+ * forgiveLoan has always set it for a loan that was never paid off. Reusing it
+ * means the child's existing 48-hour derived notification window covers a
+ * decline with no new column and no second code path.
+ *
+ * Guarded on 'requested' so a stale screen cannot overwrite an answer that has
+ * already been given.
+ */
+export async function declineLoanRequest(loanId: string, note: string): Promise<void> {
+  const trimmed = note.trim()
+  if (!trimmed) throw new Error('A reason is required to decline a loan request.')
+  const { data, error } = await supabase
+    .from('loans')
+    .update({ status: 'declined', decline_note: trimmed, paid_off_at: new Date().toISOString() })
+    .eq('id', loanId)
+    .eq('status', 'requested')
+    .select('id')
+  if (error) throw loanError(error, 'Could not decline the request')
+  if (!data || data.length === 0) {
+    throw new Error('That request was already answered. Refresh to see its current state.')
+  }
+}
+
+/**
+ * Whole months to clear a balance at a given monthly payment. Derived, never
+ * stored -- the same doctrine as goal progress and the Goal Plan weekly total.
+ */
+export function estimatedPayoffMonths(principal: number, monthlyPayment: number): number | null {
+  if (!(principal > 0) || !(monthlyPayment > 0)) return null
+  return Math.ceil(principal / monthlyPayment)
 }
 
 /**

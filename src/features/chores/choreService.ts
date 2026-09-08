@@ -3,7 +3,15 @@ import type { Chore, ChoreAssignment, FamilyMember } from '@/lib/supabase'
 import type { TablesInsert } from '@/types/database.types'
 // The Half Credit penalty leg. expenseService imports nothing from here, so
 // this edge introduces no cycle.
-import { directChargeCustom, REMINDER_PENALTY_CATEGORY } from '@/features/expenses/expenseService'
+import {
+  directChargeCustom,
+  getPurchaseRequests,
+  REMINDER_PENALTY_CATEGORY,
+  type PurchaseRequest,
+} from '@/features/expenses/expenseService'
+// The merged approval queue's third read. loanService imports expenseService
+// and nothing from here, so this edge introduces no cycle either.
+import { getLoanRequests, type LoanWithMember } from '@/features/loans/loanService'
 import {
   addDays,
   dayKey,
@@ -2206,65 +2214,97 @@ export async function getChoreRequests(): Promise<ChoreRequestQueue> {
  * ------------------------------------------------------------------ */
 
 /** Which of the three things a parent can be asked to answer. */
-export type QueueKind = 'chore' | 'request-onetime' | 'request-roster'
+export type QueueKind =
+  | 'chore'
+  | 'request-onetime'
+  | 'request-roster'
+  | 'loan-request'
+  | 'purchase-request'
 
-export interface QueueItem {
-  kind: QueueKind
-  /** The underlying row. Both shapes extend AssignmentWithChore + member. */
-  item: PendingApproval | ChoreRequest
-  /**
-   * When the child started waiting: completed_at for a finished chore,
-   * created_at for a request. Sort key, and the "2h ago" on the card.
-   */
-  waitingSince: string | null
-}
+/**
+ * A DISCRIMINATED UNION, not one interface with a widened `item`.
+ *
+ * The queue used to hold two shapes that were structurally identical
+ * (PendingApproval and ChoreRequest both extend AssignmentWithChore), so a
+ * single `item` field with a union type cost nothing. A loan request is a row
+ * from a DIFFERENT TABLE with no chore, no value and no due date -- widening
+ * `item` to include it would have made `item.chore?.title` compile everywhere
+ * and silently render blank on the new card.
+ *
+ * Narrowing on `kind` is what makes the card renderer exhaustive: adding a
+ * sixth kind without handling it is a type error rather than an empty card.
+ */
+export type QueueItem =
+  | { kind: 'chore'; item: PendingApproval; waitingSince: string | null }
+  | { kind: 'request-onetime'; item: ChoreRequest; waitingSince: string | null }
+  | { kind: 'request-roster'; item: ChoreRequest; waitingSince: string | null }
+  | { kind: 'loan-request'; item: LoanWithMember; waitingSince: string | null }
+  | { kind: 'purchase-request'; item: PurchaseRequest; waitingSince: string | null }
 
 /**
  * Completed chores awaiting approval AND both claim-request paths, as ONE
  * ordered array — the single source of truth behind the parent dashboard.
  *
- * COMPOSED FROM TWO READS, NEVER ONE. The obvious implementation is a single
- * query with `.in('status', ['completed', 'requested'])`. Do not write that.
+ * COMPOSED FROM INDEPENDENT READS, NEVER ONE. The obvious implementation is a
+ * single query with `.in('status', ['completed', 'requested'])`. Do not write
+ * that.
  * It puts money-bearing 'completed' rows and non-money 'requested' rows under
  * ONE row cap, where a backlog of the second can silently evict the first —
  * verbatim the getMemberInstances failure, where a child's live chores competed
  * with their own history for the same 500 slots. Two reads means two caps, and
  * neither category can starve the other.
  *
- * Both underlying reads are bounded by TRANSIENT status ('completed',
- * 'requested'), so neither grows with history. The limits on each are payload
- * guards, not the correctness mechanism.
+ * Every underlying read is bounded by a TRANSIENT status, so none grows with
+ * history, and the limits on each are payload guards rather than the
+ * correctness mechanism. The loan read is bounded MORE strongly than the chore
+ * reads: idx_loans_one_requested_per_member caps each child at one outstanding
+ * request, so its true ceiling is the number of children in the family.
+ *
+ * The loan read also touches a DIFFERENT TABLE, so it cannot compete with
+ * chore_assignments instance history for the same row cap — the mechanism
+ * behind all five prior truncation bugs.
  *
  * WHY THE MERGE MATTERS BEYOND LAYOUT. The count in the dashboard's status band
  * and the list beneath it are now the same array, so the screen cannot render
  * "25 pending" above "All caught up — nothing to approve", which is exactly
  * what it did when the stat card counted requests and the queue did not.
  */
-export async function getApprovalQueue(): Promise<QueueItem[]> {
-  const [approvals, requests] = await Promise.all([getPendingApprovals(), getChoreRequests()])
+export async function getApprovalQueue(familyId: string): Promise<QueueItem[]> {
+  const [approvals, requests, loanRequests, purchaseRequests] = await Promise.all([
+    getPendingApprovals(),
+    getChoreRequests(),
+    getLoanRequests(familyId),
+    getPurchaseRequests(familyId),
+  ])
 
   const items: QueueItem[] = [
-    ...approvals.map((a) => ({
-      kind: 'chore' as const,
-      item: a as PendingApproval | ChoreRequest,
-      waitingSince: a.completed_at,
-    })),
-    ...requests.oneTime.map((r) => ({
-      kind: 'request-onetime' as const,
-      item: r as PendingApproval | ChoreRequest,
-      waitingSince: r.created_at,
-    })),
-    ...requests.roster.map((r) => ({
-      kind: 'request-roster' as const,
-      item: r as PendingApproval | ChoreRequest,
-      waitingSince: r.created_at,
-    })),
+    ...approvals.map(
+      (a) => ({ kind: 'chore', item: a, waitingSince: a.completed_at }) as QueueItem
+    ),
+    ...requests.oneTime.map(
+      (r) => ({ kind: 'request-onetime', item: r, waitingSince: r.created_at }) as QueueItem
+    ),
+    ...requests.roster.map(
+      (r) => ({ kind: 'request-roster', item: r, waitingSince: r.created_at }) as QueueItem
+    ),
+    ...loanRequests.map(
+      (l) => ({ kind: 'loan-request', item: l, waitingSince: l.created_at }) as QueueItem
+    ),
+    ...purchaseRequests.map(
+      (r) => ({ kind: 'purchase-request', item: r, waitingSince: r.created_at }) as QueueItem
+    ),
   ]
 
   // Money first, then longest-waiting first within each tier. `id` is the final
   // tie-break so the order is DETERMINISTIC — see the Family Week "biggest win"
   // note in CLAUDE.md for what an unstable tie-break costs in verification time.
-  const rank = (k: QueueKind) => (k === 'chore' ? 0 : 1)
+  //
+  // A LOAN REQUEST RANKS WITH THE MONEY, not with the chore requests. Approving
+  // one commits a child to months of deductions, which is a heavier decision
+  // than approving a chore they want to do — and unlike a chore request, there
+  // is no cheap "not today" that costs nothing to get wrong.
+  const rank = (k: QueueKind) =>
+    k === 'chore' || k === 'loan-request' || k === 'purchase-request' ? 0 : 1
   return items.sort(
     (a, b) =>
       rank(a.kind) - rank(b.kind) ||

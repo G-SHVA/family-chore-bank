@@ -6,6 +6,8 @@ import {
   getFamilyLoans,
   createLoan,
   forgiveLoan,
+  getLoanRequests,
+  RESOLVED_LOAN_STATUSES,
   runMonthlyDeductions,
   amountPaid,
   paidOffPct,
@@ -42,6 +44,10 @@ export default function LoansTab() {
   const children = useMemo(() => members.filter(isChild), [members])
 
   const [loans, setLoans] = useState<LoanWithMember[]>([])
+  // Requests are NOT loans and never render on this screen -- they are
+  // answered in the approval queue. They are read here for one reason: to
+  // keep a child with an unanswered request out of the New Loan selector.
+  const [requests, setRequests] = useState<LoanWithMember[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -53,7 +59,12 @@ export default function LoansTab() {
     if (!familyId) return
     try {
       setError(null)
-      setLoans(await getFamilyLoans(familyId))
+      const [real, pending] = await Promise.all([
+        getFamilyLoans(familyId),
+        getLoanRequests(familyId),
+      ])
+      setLoans(real)
+      setRequests(pending)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load loans.')
     } finally {
@@ -66,13 +77,31 @@ export default function LoansTab() {
   }, [load])
 
   const active = loans.filter((l) => l.status === 'active')
-  const resolved = loans.filter((l) => l.status !== 'active')
+  // EXPLICIT, not `!== 'active'`. The negation was correct only while three
+  // statuses existed; with 'requested' and 'declined' in the constraint it
+  // would sweep an unanswered request into Loan History and render it as a
+  // completed loan. getFamilyLoans() already excludes requests at the query,
+  // so this is the second of two layers -- and the one that keeps working if
+  // that read is ever widened. Same doctrine as the chore_assignments rule:
+  // state the statuses you want rather than trusting what you exclude.
+  const resolved = loans.filter((l) => RESOLVED_LOAN_STATUSES.includes(l.status))
   // One active loan per child is enforced by a partial unique index; this only
   // decides whether to offer the button, and says why when it does not.
-  const childrenWithoutLoan = children.filter(
-    (c) => !active.some((l) => l.member_id === c.id)
-  )
+  //
+  // A child with an UNANSWERED REQUEST is excluded too. Without this a parent
+  // could create a loan directly while the child's own request still sat in
+  // the queue -- the index would permit it (it is scoped to 'active', and the
+  // request is 'requested'), leaving an orphaned request the child sees as
+  // pending forever against a loan they never agreed to. The answer belongs in
+  // the queue, where the terms can actually be discussed.
+  const spokenFor = new Set([
+    ...active.map((l) => l.member_id),
+    ...requests.map((r) => r.member_id),
+  ])
+  const childrenWithoutLoan = children.filter((c) => !spokenFor.has(c.id))
   const canCreate = childrenWithoutLoan.length > 0
+  const blockedByRequest =
+    !canCreate && requests.length > 0 && active.length < children.length
 
   async function handleRun() {
     setRunning(true)
@@ -122,7 +151,9 @@ export default function LoansTab() {
           <>
             {' '}
             <span className="text-antique">
-              Every child already has an active loan; pay one off or forgive it to add another.
+              {blockedByRequest
+                ? 'A child has a loan request waiting — answer it on the Home screen, where you can set the terms.'
+                : 'Every child already has an active loan; pay one off or forgive it to add another.'}
             </span>
           </>
         )}
@@ -270,8 +301,15 @@ function ActiveLoanCard({
   )
 }
 
+const RESOLVED_PILL = {
+  forgiven: { label: 'Forgiven', cls: 'border-antique/40 text-antique' },
+  declined: { label: 'Declined', cls: 'border-antique/40 text-antique' },
+  paid_off: { label: 'Paid off', cls: 'border-green/40 text-green' },
+} as const
+
 function ResolvedLoanRow({ loan, currency }: { loan: LoanWithMember; currency: string }) {
   const forgiven = loan.status === 'forgiven'
+  const declined = loan.status === 'declined'
   return (
     <Card className="flex flex-wrap items-center justify-between gap-3">
       <div className="min-w-0">
@@ -295,13 +333,21 @@ function ResolvedLoanRow({ loan, currency }: { loan: LoanWithMember; currency: s
               : '—'}
           </div>
         </div>
+        {/* A LOOKUP, not a chained ternary. cn() has no tailwind-merge, so
+            exactly one colour class may be emitted -- chaining `?:` for a
+            third state is how two end up in the class list with stylesheet
+            order deciding. Same rule as Stat's `tone` on Family Week.
+
+            Declined shares antique with forgiven because both are a parent's
+            decision rather than something the child completed; green stays
+            reserved for the one case the child actually finished. */}
         <span
           className={cn(
             'label-caps rounded-input border px-3 py-1 text-[10px]',
-            forgiven ? 'border-antique/40 text-antique' : 'border-green/40 text-green'
+            RESOLVED_PILL[declined ? 'declined' : forgiven ? 'forgiven' : 'paid_off'].cls
           )}
         >
-          {forgiven ? 'Forgiven' : 'Paid off'}
+          {RESOLVED_PILL[declined ? 'declined' : forgiven ? 'forgiven' : 'paid_off'].label}
         </span>
       </div>
     </Card>

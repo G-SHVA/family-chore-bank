@@ -26,8 +26,21 @@ import {
   type ChoreRequest,
   type PendingApproval,
   type QueueItem,
+  type QueueKind,
   type RosterEntry,
 } from '@/features/chores/choreService'
+import {
+  approvePurchaseRequest,
+  declinePurchaseRequest,
+  parseMemberTag,
+  type PurchaseRequest,
+} from '@/features/expenses/expenseService'
+import {
+  approveLoanRequest,
+  declineLoanRequest,
+  estimatedPayoffMonths,
+  type LoanWithMember,
+} from '@/features/loans/loanService'
 import {
   getFamilyExpenses,
   applyExpense,
@@ -54,6 +67,9 @@ export default function ParentDashboard() {
   const [children, setChildren] = useState<FamilyMember[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejecting, setRejecting] = useState<PendingApproval | null>(null)
+  const [reviewingLoan, setReviewingLoan] = useState<LoanWithMember | null>(null)
+  const [decliningLoan, setDecliningLoan] = useState<LoanWithMember | null>(null)
+  const [decliningPurchase, setDecliningPurchase] = useState<PurchaseRequest | null>(null)
   const [decliningRequest, setDecliningRequest] = useState<ChoreRequest | null>(null)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
   // Synchronous guard so a double-tap can't dispatch two approvals for one chore.
@@ -85,7 +101,7 @@ export default function ParentDashboard() {
       await generateDailyAssignments()
       const members = await getActiveMembers(familyId)
       setChildren(members.filter(isChild))
-      setQueue(await getApprovalQueue())
+      setQueue(await getApprovalQueue(familyId))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load dashboard.')
     } finally {
@@ -145,6 +161,42 @@ export default function ParentDashboard() {
       setError(e instanceof Error ? e.message : 'Half credit failed.')
     } finally {
       inFlight.current.delete(a.id)
+      setBusyId(null)
+    }
+  }
+
+  /**
+   * Approve a purchase. The status flip inside approvePurchaseRequest is the
+   * concurrency gate — it is guarded on 'requested', so a second tablet's
+   * approve matches no row and returns BEFORE any money moves.
+   */
+  async function handleApprovePurchase(r: PurchaseRequest, child: FamilyMember | null) {
+    if (!child) {
+      setError('Could not tell which child made that request.')
+      return
+    }
+    setBusyId(r.id)
+    try {
+      await approvePurchaseRequest(r.id, child.id)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not approve the purchase.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function handleDeclinePurchase(note: string) {
+    if (!decliningPurchase) return
+    const r = decliningPurchase
+    setDecliningPurchase(null)
+    setBusyId(r.id)
+    try {
+      await declinePurchaseRequest(r.id, note)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not decline the request.')
+    } finally {
       setBusyId(null)
     }
   }
@@ -245,6 +297,11 @@ export default function ParentDashboard() {
                   onFullCredit={handleApprove}
                   onHalfCredit={handleHalfCredit}
                   onNoCredit={setRejecting}
+                  onReviewLoan={setReviewingLoan}
+                  onDeclineLoan={setDecliningLoan}
+                  onApprovePurchase={handleApprovePurchase}
+                  onDeclinePurchase={setDecliningPurchase}
+                  familyChildren={children}
                   onApproveRequest={handleApproveRequest}
                   onDeclineRequest={setDecliningRequest}
                 />
@@ -253,6 +310,31 @@ export default function ParentDashboard() {
           </AnimatePresence>
         </div>
       )}
+
+      <LoanReviewModal
+        loan={reviewingLoan}
+        currency={currency}
+        onClose={() => setReviewingLoan(null)}
+        onApproved={() => {
+          setReviewingLoan(null)
+          void load()
+        }}
+      />
+
+      <PurchaseDeclineModal
+        request={decliningPurchase}
+        onClose={() => setDecliningPurchase(null)}
+        onSubmit={handleDeclinePurchase}
+      />
+
+      <LoanDeclineModal
+        loan={decliningLoan}
+        onClose={() => setDecliningLoan(null)}
+        onDeclined={() => {
+          setDecliningLoan(null)
+          void load()
+        }}
+      />
 
       <RejectModal
         approval={rejecting}
@@ -374,6 +456,11 @@ function QueueCard({
   onNoCredit,
   onApproveRequest,
   onDeclineRequest,
+  onReviewLoan,
+  onDeclineLoan,
+  onApprovePurchase,
+  onDeclinePurchase,
+  familyChildren,
 }: {
   entry: QueueItem
   currency: string
@@ -383,7 +470,59 @@ function QueueCard({
   onNoCredit: (a: PendingApproval) => void
   onApproveRequest: (r: ChoreRequest, isRoster: boolean) => void
   onDeclineRequest: (r: ChoreRequest) => void
+  onReviewLoan: (l: LoanWithMember) => void
+  onDeclineLoan: (l: LoanWithMember) => void
+  onApprovePurchase: (r: PurchaseRequest, child: FamilyMember | null) => void
+  onDeclinePurchase: (r: PurchaseRequest) => void
+  // NOT named `children`: that is React's own JSX slot, and a prop of that name
+  // on a component rendered self-closing silently reads as empty content.
+  familyChildren: FamilyMember[]
 }) {
+  // A LABEL PER KIND, and it is the primary delineation signal on this screen.
+  // Five card types now share one queue; a parent must be able to tell what
+  // KIND of decision they are making without reading the body. The label is
+  // the first thing in the card for exactly that reason.
+  const TYPE_LABEL: Record<QueueKind, string> = {
+    chore: 'Chore completion',
+    'request-onetime': 'Chore request',
+    'request-roster': 'Roster request',
+    'loan-request': 'Loan request',
+    'purchase-request': 'Purchase request',
+  }
+
+  if (entry.kind === 'purchase-request') {
+    // The child is resolved from the description tag against the members the
+    // dashboard already holds -- see parseMemberTag for why the id lives there
+    // rather than in a column. No extra read.
+    const memberId = parseMemberTag(entry.item.description).memberId
+    return (
+      <PurchaseRequestCard
+        request={entry.item}
+        child={familyChildren.find((c) => c.id === memberId) ?? null}
+        label={TYPE_LABEL['purchase-request']}
+        waitingSince={entry.waitingSince}
+        currency={currency}
+        busy={busy}
+        onApprove={onApprovePurchase}
+        onDecline={onDeclinePurchase}
+      />
+    )
+  }
+
+  if (entry.kind === 'loan-request') {
+    return (
+      <LoanRequestCard
+        loan={entry.item}
+        label={TYPE_LABEL['loan-request']}
+        waitingSince={entry.waitingSince}
+        currency={currency}
+        busy={busy}
+        onReview={onReviewLoan}
+        onDecline={onDeclineLoan}
+      />
+    )
+  }
+
   const { kind, item, waitingSince } = entry
   const isRoster = kind === 'request-roster'
   const blurb =
@@ -395,6 +534,7 @@ function QueueCard({
 
   return (
     <Card className="flex flex-col gap-4">
+      <div className="label-caps text-[10px] text-text-muted">{TYPE_LABEL[kind]}</div>
       <div className="flex min-w-0 items-center gap-3">
         <Avatar member={item.member} />
         <div className="min-w-0">
@@ -483,6 +623,80 @@ function QueueCard({
           </Button>
         </div>
       )}
+    </Card>
+  )
+}
+
+/**
+ * A loan request. ONE PRIMARY ACTION, and it is "Review & Set Terms" — never a
+ * bare Approve.
+ *
+ * Approving a loan means agreeing an amount, a monthly payment and a payment
+ * day. The child's figures are an opening position, not an order form, so a
+ * one-tap approve on the card would commit the parent to numbers a child chose
+ * and skip the negotiation that is the entire point of the feature. The card
+ * shows what was asked; the modal is where terms are actually set.
+ *
+ * Decline is secondary and opens its own modal, because it requires a note.
+ */
+function LoanRequestCard({
+  loan,
+  label,
+  waitingSince,
+  currency,
+  busy,
+  onReview,
+  onDecline,
+}: {
+  loan: LoanWithMember
+  label: string
+  waitingSince: string | null
+  currency: string
+  busy: boolean
+  onReview: (l: LoanWithMember) => void
+  onDecline: (l: LoanWithMember) => void
+}) {
+  return (
+    <Card className="flex flex-col gap-4">
+      <div className="label-caps text-[10px] text-text-muted">{label}</div>
+      <div className="flex min-w-0 items-center gap-3">
+        <Avatar member={loan.member} />
+        <div className="min-w-0">
+          <div className="display text-lg text-text">{loan.description}</div>
+          <div className="text-sm text-text-muted">
+            {loan.member?.display_name} ·{' '}
+            <span className="font-semibold text-antique">
+              {formatCurrency(loan.principal, currency)}
+            </span>
+            <span className="ml-2">
+              suggests {formatCurrency(loan.monthly_payment, currency)}/mo
+            </span>
+            <span className="ml-2 inline-flex items-center gap-1">
+              <Clock className="h-3.5 w-3.5" /> {timeAgo(waitingSince)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-sm text-text-muted">You set the final terms</div>
+        </div>
+      </div>
+
+      <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2">
+        <Button
+          size="lgResponsive"
+          variant="accent"
+          onClick={() => onReview(loan)}
+          disabled={busy}
+        >
+          <Check className="h-5 w-5 shrink-0" /> Review &amp; Set Terms
+        </Button>
+        <Button
+          size="lgResponsive"
+          variant="danger"
+          onClick={() => onDecline(loan)}
+          disabled={busy}
+        >
+          <X className="h-5 w-5 shrink-0" /> Decline
+        </Button>
+      </div>
     </Card>
   )
 }
@@ -638,33 +852,32 @@ function RejectModal({
         credit.
       </p>
       <label htmlFor="reject-note" className="label-caps mb-2 block text-[11px] text-text-muted">
-        Reason (required)
+        Add a note (optional)
       </label>
       <textarea
         id="reject-note"
         value={note}
         onChange={(e) => setNote(e.target.value)}
         rows={3}
-        placeholder="Let them know why this wasn't approved..."
+        placeholder="Let them know what needs improvement..."
         className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
       />
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
           Cancel
         </Button>
-        {/* The note is now required: it arrives pre-filled, so an empty box means
-            the parent deliberately cleared it. A child losing the credit is owed
-            the reason — it is the only feedback channel they have (there is no
-            notifications table; the note IS the message). */}
-        <Button variant="danger" onClick={() => onSubmit(note.trim())} disabled={!note.trim()}>
+        {/* THE NOTE IS OPTIONAL, and this is a deliberate reversal — see the
+            regression note in CLAUDE.md. It was briefly required on the theory
+            that a child losing credit is owed a reason. Eve's objection is the
+            one that governs: the common rejection is a reminder the child
+            already knows about, and forcing a sentence turns a two-second tap
+            into a writing task on the screen that is meant to take three
+            minutes. The field arrives pre-filled, so the reason is still there
+            by default — clearing it is an explicit choice, not an oversight. */}
+        <Button variant="danger" onClick={() => onSubmit(note.trim())}>
           Reject — No Credit
         </Button>
       </div>
-      {!note.trim() && (
-        <p className="mt-2 text-right text-xs text-text-muted">
-          Add a reason so they know what happened.
-        </p>
-      )}
     </Modal>
   )
 }
@@ -1451,6 +1664,408 @@ function DeclineRequestModal({
           Add a reason so they know what happened.
         </p>
       )}
+    </Modal>
+  )
+}
+
+/**
+ * A purchase request.
+ *
+ * THE CHILD'S BALANCE IS ON THE CARD, and it is the whole reason this card is
+ * different from the others. Every other queue decision is about whether work
+ * was done; this one is about whether the child can afford the thing, and a
+ * parent should not have to leave the queue to find that out.
+ *
+ * THE AMOUNT IS ON THE BUTTON -- "Approve — Charge $29.99" -- for the same
+ * reason Full Credit carries its figure: a parent must be able to read what
+ * they are authorising on the control they are about to tap. It comes from the
+ * same value the write uses, so the two cannot drift.
+ *
+ * The overdraft warning WARNS AND NEVER BLOCKS. A parent may deliberately let a
+ * child go negative; that is the book's lesson working, not an error state. It
+ * is antique rather than danger for exactly that reason.
+ */
+function PurchaseRequestCard({
+  request,
+  child,
+  label,
+  waitingSince,
+  currency,
+  busy,
+  onApprove,
+  onDecline,
+}: {
+  request: PurchaseRequest
+  child: FamilyMember | null
+  label: string
+  waitingSince: string | null
+  currency: string
+  busy: boolean
+  onApprove: (r: PurchaseRequest, child: FamilyMember | null) => void
+  onDecline: (r: PurchaseRequest) => void
+}) {
+  const reason = parseMemberTag(request.description).reason
+  const balance = child?.balance ?? 0
+  const wouldOverdraft = child != null && balance < request.amount
+
+  return (
+    <Card className="flex flex-col gap-4">
+      <div className="label-caps text-[10px] text-text-muted">{label}</div>
+      <div className="flex min-w-0 items-center gap-3">
+        <Avatar member={child ?? null} />
+        <div className="min-w-0">
+          <div className="display text-lg text-text">{request.title}</div>
+          <div className="text-sm text-text-muted">
+            {child?.display_name ?? 'A child'} ·{' '}
+            <span className="font-semibold text-antique">
+              {formatCurrency(request.amount, currency)}
+            </span>
+            <span className="ml-2 inline-flex items-center gap-1">
+              <Clock className="h-3.5 w-3.5" /> {timeAgo(waitingSince)}
+            </span>
+          </div>
+          {reason && <div className="mt-0.5 text-sm text-text-muted">“{reason}”</div>}
+          <div className="mt-1 text-sm text-text-muted">
+            Balance: <span className="tabular-nums text-text">{formatCurrency(balance, currency)}</span>
+          </div>
+          {wouldOverdraft && (
+            <div className="mt-1 text-sm text-antique">
+              This would overdraft {child?.display_name}’s account
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-2">
+        <Button
+          size="lgResponsive"
+          variant="primaryList"
+          onClick={() => onApprove(request, child)}
+          disabled={busy}
+        >
+          <Check className="h-5 w-5 shrink-0" /> Approve — Charge{' '}
+          {formatCurrency(request.amount, currency)}
+        </Button>
+        <Button
+          size="lgResponsive"
+          variant="danger"
+          onClick={() => onDecline(request)}
+          disabled={busy}
+        >
+          <X className="h-5 w-5 shrink-0" /> Decline
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * Review a loan request and set the real terms.
+ *
+ * THE CHILD'S FIGURES ARE PREFILLED, NOT IMPOSED. Every field is editable and
+ * the write reads from this form, never from the stored row -- so what the
+ * parent sees is what gets committed. The child's original ask is repeated at
+ * the top, read-only and muted, so the parent can tell at a glance whether they
+ * have changed anything.
+ *
+ * "Estimated payoff" is computed at render from the CURRENT field values via
+ * the same helper nothing stores, so it moves as the parent types. It is the
+ * one number that makes a monthly payment mean something to a child, and a
+ * parent halving the payment should see the months double before they agree.
+ */
+function LoanReviewModal({
+  loan,
+  currency,
+  onClose,
+  onApproved,
+}: {
+  loan: LoanWithMember | null
+  currency: string
+  onClose: () => void
+  onApproved: () => void
+}) {
+  const [description, setDescription] = useState('')
+  const [principal, setPrincipal] = useState('')
+  const [payment, setPayment] = useState('')
+  const [payDay, setPayDay] = useState('5')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  // Refill from the request each time one is opened. Keyed on id rather than
+  // on the object so re-renders during the exit animation do not reset a form
+  // the parent is still looking at.
+  useEffect(() => {
+    if (!loan) return
+    setDescription(loan.description)
+    setPrincipal(String(loan.principal))
+    setPayment(String(loan.monthly_payment))
+    setPayDay(String(loan.payment_day ?? 5))
+    setErr(null)
+    setBusy(false)
+  }, [loan?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const p = Number.parseFloat(principal)
+  const m = Number.parseFloat(payment)
+  const d = Number.parseInt(payDay, 10)
+  const months = estimatedPayoffMonths(p, m)
+  const ready =
+    description.trim().length > 0 &&
+    Number.isFinite(p) && p > 0 &&
+    Number.isFinite(m) && m > 0 &&
+    Number.isFinite(d) && d >= 1 && d <= 28
+
+  async function submit() {
+    if (!loan || !ready || busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await approveLoanRequest({
+        loanId: loan.id,
+        familyId: loan.family_id,
+        description: description.trim(),
+        principal: p,
+        monthlyPayment: m,
+        paymentDay: d,
+      })
+      onApproved()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not approve the loan.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const fieldClass =
+    'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none min-h-touch'
+  const labelClass = 'label-caps mb-2 block text-[11px] text-text-muted'
+
+  return (
+    <Modal open={!!loan} onClose={onClose} title="Review loan request">
+      <div className="flex flex-col gap-4">
+        <div className="rounded-input border border-line bg-deep/60 p-3">
+          <div className="label-caps text-[10px] text-text-muted">
+            {loan?.member?.display_name} asked for
+          </div>
+          <div className="mt-1 text-base text-text-muted">
+            {formatCurrency(loan?.principal ?? 0, currency)} for “{loan?.description}”, offering{' '}
+            {formatCurrency(loan?.monthly_payment ?? 0, currency)} a month
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="loan-rev-desc" className={labelClass}>
+            What the loan is for
+          </label>
+          <input
+            id="loan-rev-desc"
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className={fieldClass}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="loan-rev-principal" className={labelClass}>
+              Loan amount
+            </label>
+            <input
+              id="loan-rev-principal"
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              step="0.01"
+              value={principal}
+              onChange={(e) => setPrincipal(e.target.value)}
+              className={fieldClass}
+            />
+          </div>
+          <div>
+            <label htmlFor="loan-rev-payment" className={labelClass}>
+              Monthly payment
+            </label>
+            <input
+              id="loan-rev-payment"
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              step="0.01"
+              value={payment}
+              onChange={(e) => setPayment(e.target.value)}
+              className={fieldClass}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="loan-rev-day" className={labelClass}>
+            Payment day of the month
+          </label>
+          <input
+            id="loan-rev-day"
+            type="number"
+            inputMode="numeric"
+            min="1"
+            max="28"
+            step="1"
+            value={payDay}
+            onChange={(e) => setPayDay(e.target.value)}
+            className={fieldClass}
+          />
+        </div>
+
+        <div className="spine-top pt-3">
+          <span className="label-caps text-[11px] text-text-muted">Estimated payoff</span>{' '}
+          <span className="text-lg text-antique" data-testid="loan-payoff">
+            {months === null ? '—' : `${months} ${months === 1 ? 'month' : 'months'}`}
+          </span>
+        </div>
+
+        {err && <p className="text-base text-danger">{err}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={!ready || busy}>
+            {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Approve Loan'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * Decline a loan request. THE NOTE IS REQUIRED — the opposite of the chore
+ * rejection two functions above, deliberately.
+ *
+ * A rejected chore is one missed credit a child can earn again tomorrow, and
+ * forcing a sentence there turned a two-second tap into a writing task. A
+ * declined loan is a financial answer the child cannot act on without knowing
+ * why, and there is no notifications table, so decline_note IS the message.
+ * The service layer enforces this too; the disabled button is the courtesy, not
+ * the guarantee.
+ */
+function LoanDeclineModal({
+  loan,
+  onClose,
+  onDeclined,
+}: {
+  loan: LoanWithMember | null
+  onClose: () => void
+  onDeclined: () => void
+}) {
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!loan) return
+    setNote('')
+    setErr(null)
+    setBusy(false)
+  }, [loan?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function submit() {
+    if (!loan || !note.trim() || busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await declineLoanRequest(loan.id, note)
+      onDeclined()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not decline the request.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal open={!!loan} onClose={onClose} title="Decline loan request">
+      <p className="mb-4 text-text-muted">
+        {loan?.member?.display_name} asked for “{loan?.description}”.
+      </p>
+      <label htmlFor="loan-decline-note" className="label-caps mb-2 block text-[11px] text-text-muted">
+        Why are you saying no? (required)
+      </label>
+      <textarea
+        id="loan-decline-note"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={3}
+        placeholder="Explain your thinking — they will see this."
+        className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
+      />
+      {err && <p className="mt-2 text-base text-danger">{err}</p>}
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={() => void submit()} disabled={!note.trim() || busy}>
+          {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Decline request'}
+        </Button>
+      </div>
+      {!note.trim() && (
+        <p className="mt-2 text-right text-xs text-text-muted">
+          A loan is a big decision — tell them why.
+        </p>
+      )}
+    </Modal>
+  )
+}
+
+
+/**
+ * Decline a purchase. THE NOTE IS OPTIONAL — matching the chore rejection, not
+ * the loan decline.
+ *
+ * A declined purchase costs the child nothing: they keep their money and can
+ * ask again tomorrow. A declined loan forecloses a plan, which is why that one
+ * demands a sentence. Weighting the two the same would either make loans too
+ * easy to refuse or make every "not right now" a writing task.
+ */
+function PurchaseDeclineModal({
+  request,
+  onClose,
+  onSubmit,
+}: {
+  request: PurchaseRequest | null
+  onClose: () => void
+  onSubmit: (note: string) => void
+}) {
+  const [note, setNote] = useState('')
+  useEffect(() => {
+    if (request) setNote('')
+  }, [request])
+  return (
+    <Modal open={!!request} onClose={onClose} title="Not this time">
+      <p className="mb-4 text-text-muted">
+        “{request?.title}” will be sent back unapproved. Nothing comes out of their balance.
+      </p>
+      <label
+        htmlFor="purchase-decline-note"
+        className="label-caps mb-2 block text-[11px] text-text-muted"
+      >
+        Add a note (optional)
+      </label>
+      <textarea
+        id="purchase-decline-note"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={3}
+        placeholder="Let them know why, or what would change your mind..."
+        className="w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none"
+      />
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={() => onSubmit(note.trim())}>
+          Decline request
+        </Button>
+      </div>
     </Modal>
   )
 }

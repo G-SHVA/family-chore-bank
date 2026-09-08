@@ -306,6 +306,8 @@ export type Database = {
           category: string | null
           created_at: string | null
           created_by: string | null
+          decline_note: string | null
+          status: string
           description: string | null
           family_id: string | null
           icon: string | null
@@ -318,6 +320,8 @@ export type Database = {
           category?: string | null
           created_at?: string | null
           created_by?: string | null
+          decline_note?: string | null
+          status?: string
           description?: string | null
           family_id?: string | null
           icon?: string | null
@@ -330,6 +334,8 @@ export type Database = {
           category?: string | null
           created_at?: string | null
           created_by?: string | null
+          decline_note?: string | null
+          status?: string
           description?: string | null
           family_id?: string | null
           icon?: string | null
@@ -508,6 +514,7 @@ export type Database = {
           balance_remaining: number
           created_at: string | null
           created_by: string | null
+          decline_note: string | null
           description: string
           expense_id: string | null
           family_id: string
@@ -523,6 +530,7 @@ export type Database = {
           balance_remaining: number
           created_at?: string | null
           created_by?: string | null
+          decline_note?: string | null
           description: string
           expense_id?: string | null
           family_id: string
@@ -538,6 +546,7 @@ export type Database = {
           balance_remaining?: number
           created_at?: string | null
           created_by?: string | null
+          decline_note?: string | null
           description?: string
           expense_id?: string | null
           family_id?: string

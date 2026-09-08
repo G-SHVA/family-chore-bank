@@ -1788,6 +1788,279 @@ NOT changed here because it is outside Session B's four agreed changes and the
 fix is a product decision: either Family Week adopts getApprovalQueue().length,
 or the card is relabelled to say what it actually counts. Decide before launch.
 
+## SHIPPED 2026-09-08 — child loan requests and child purchase requests
+
+Two features plus one regression fix. Children can now ASK -- for a loan, and
+for a purchase -- and both land in the parent's single approval queue. Verified
+against live family data; balances opened POCO $12.42 / Cuddles $19.50 and
+closed POCO $12.17 / Cuddles $19.50. The $0.25 difference is REAL FAMILY
+ACTIVITY that happened mid-session (a "Sit on Cushions" expense applied from
+another device at 12:28 UTC), not a test artifact, and was deliberately not
+reversed. See SESSION BALANCE PROTOCOL -- distinguishing those two is the whole
+point of the snapshot.
+
+### REGRESSION FIXED — the chore rejection note is OPTIONAL again
+
+RejectModal had `disabled={!note.trim()}` on the Reject button, plus a nag line.
+Both are gone; the label reads "Add a note (optional)".
+
+THIS HAS NOW BEEN REVERSED TWICE. It was made required on the reasonable theory
+that a child losing credit is owed a reason. Eve's objection is the one that
+governs: the common rejection is a reminder the child already knows about, and
+forcing a sentence turns a two-second tap into a writing task on the screen
+that is meant to take three minutes. The field still arrives PRE-FILLED with
+REMINDER_REJECT_NOTE, so the reason is there by default and clearing it is an
+explicit choice. Do not make it required a third time.
+
+No service change was needed: rejectChore already stores `notes?.trim() || null`
+and ChoreCard only renders the note block when notes is truthy, so a no-note
+rejection shows the plain "Not approved" pill with nothing under it.
+
+### SCHEMA FACTS — CHILD LOAN REQUESTS (added 2026-09-08)
+
+`loans.status` CHECK widened from three values to FIVE:
+`active | paid_off | forgiven | requested | declined`.
+
+- `loans.decline_note text` -- the parent's reason for declining a request.
+  Required on decline (enforced in declineLoanRequest AND by a disabled
+  button), NULL on every other status. There is no notifications table, so --
+  exactly as with chore_assignments.notes -- THE COLUMN IS THE MESSAGE and the
+  child's only feedback channel.
+- `loans.paid_off_at` NOW FUNCTIONS AS resolved_at FOR ALL THREE TERMINAL
+  STATES: paid_off, forgiven AND declined. This is not a new convention, it is
+  naming the one that already existed -- forgiveLoan() has always stamped it
+  for a loan that was never paid off. Reusing it means the child's existing
+  48-hour derived notification window covers a decline with NO new timestamp
+  column and NO second code path.
+- `idx_loans_one_requested_per_member` -- partial unique index on (member_id)
+  WHERE status = 'requested'. Mirrors idx_loans_one_active_per_member and is
+  the layer that survives concurrency. VERIFIED by probe INSERT 2026-09-08: a
+  second requested loan for one child raises unique_violation.
+  SCOPED TO 'requested' ONLY, deliberately -- a declined request frees the slot
+  immediately so the child can ask again with better terms. The decline
+  NOTIFICATION surviving that re-request is DISPLAY STATE derived from
+  paid_off_at, never a database constraint. Gary's reasoning, recorded because
+  it is the right one: the decline reason is the most valuable thing the child
+  gets out of being told no, and a child who immediately re-asks has probably
+  not read it yet.
+
+A REQUEST IS NOT A LOAN. requestLoan() writes expense_id = NULL and never
+touches the money path. That gives process_loan_payments() THREE independent
+reasons to skip it: its explicit `WHERE l.status = 'active'`, its
+`CONTINUE WHEN r.expense_id IS NULL`, and the fact that no expenses row exists
+yet. The expenses row is created only on approval, by approveLoanRequest.
+Verified live: creating a request moved no balance.
+
+APPROVAL IS ON THE PARENT'S TERMS, NOT THE CHILD'S. Every value written comes
+from the review modal, not the stored row -- the child's figures are an opening
+position. Verified live 2026-09-08: POCO asked for $25 at $5/mo, the parent set
+$10/mo, and the row went active with monthly_payment = 10. There is deliberately
+NO one-tap Approve on the queue card; the only primary action is
+"Review & Set Terms", because a one-tap approve of the child's own numbers would
+remove the negotiation that is the entire point of the feature.
+
+Both approve and decline are guarded `.eq('status','requested')` so two tablets
+cannot both answer the same request -- the second matches no row. That guard,
+not the unique index, is what makes approval safe: once the row is 'active' it
+has left idx_loans_one_requested_per_member entirely.
+
+#### THE NEGATION TRAP THIS FEATURE EXPOSED -- read before adding a sixth status
+
+Widening the status constraint was NOT additive, and the audit before the ALTER
+is what caught it. TWO call sites classified loans by NEGATION:
+
+    LoansTab.tsx      const resolved = loans.filter((l) => l.status !== 'active')
+    loanService.ts    resolved: rows.find((l) => l.status !== 'active') ?? null
+
+Both were correct only while three statuses existed. With 'requested' in the
+constraint, an UNANSWERED REQUEST satisfies `!== 'active'` -- so it would have
+rendered inside Loan History styled as a COMPLETED loan, and on the child's
+dashboard as a RESOLVED one. getFamilyLoans() additionally had NO status filter
+at all, so it was fetching every row in the family.
+
+Fixed by removing the negations rather than lengthening them:
+`LOANS_TAB_STATUSES` and `RESOLVED_LOAN_STATUSES` are explicit lists, and
+getChildLoanState returns a three-way `{ active, requested, resolved }` whose
+every arm matches a status BY NAME.
+
+RULE, and it is the same one the chore_assignments truncation rules encode:
+state the statuses you WANT, never the one you don't. Adding a status must
+never silently reclassify an existing row.
+
+#### 'declined' belongs in Loan History; 'requested' does not
+
+LOANS_TAB_STATUSES is `active | paid_off | forgiven | declined` -- it excludes
+ONLY 'requested'. The distinction is the point: 'requested' is an OPEN QUESTION
+and belongs in the approval queue where terms can still be set, while 'declined'
+is a TERMINAL DECISION a parent already made. Hiding the latter would mean the
+only record of a refusal lived on the child's dashboard for 48 hours and then
+nowhere at all.
+
+CAUGHT IN CLEANUP, NOT IN DESIGN. The first implementation excluded 'declined'
+from the query while LoansTab's resolved filter included it -- dead code, and
+the declined loan appeared nowhere. Found by actually looking at Loan History
+rather than trusting the filter. The Declined pill shares antique with Forgiven
+(both are a parent's decision); green stays reserved for the one case the child
+actually finished. The pill is a LOOKUP table, not a chained ternary -- cn() has
+no tailwind-merge, so exactly one colour class may be emitted.
+
+### SCHEMA FACTS — CHILD PURCHASE REQUESTS (added 2026-09-08)
+
+`expenses.status text NOT NULL DEFAULT 'approved'`
+CHECK (status IN ('approved','requested','declined')), plus
+`expenses.decline_note text`.
+
+DEFAULT 'approved' is what makes it additive: every pre-existing row is approved
+by definition because it already exists and has already been applied. Counted
+before the ALTER: **63 rows** (not the ~9,174 the spec assumed -- that figure is
+closer to chore_assignments). All 63 defaulted correctly.
+
+SAFE BECAUSE `expenses` HAS NO TRIGGERS AT ALL. Verified against pg_trigger
+before any SQL: the ONLY trigger across expenses + expense_applications is
+`expense_application_balance_update`, AFTER INSERT on expense_applications.
+So a 'requested' expenses row CANNOT move a balance -- there is no code path
+that would. Confirmed live afterwards: POCO's $29.99 request sat with
+applications = 0 and his balance did not move until approval.
+
+`expenses.decline_note` mirrors loans.decline_note and exists for the same
+reason: expenses.description holds the CHILD'S stated reason for wanting the
+thing, and overwriting it with the parent's answer would destroy the child's
+own words. OPTIONAL here, unlike loans -- a declined purchase costs the child
+nothing and they can ask again tomorrow, while a declined loan forecloses a
+plan. Purchase decline follows the chore-rejection rule; loan decline does not.
+
+'purchase-request' IS THE FOURTH RESERVED EXPENSES CATEGORY. Same caveat as the
+other three and it never stops mattering: `expenses` has no is_archived column,
+so the exclusion in getFamilyExpenses() is the ENTIRE mechanism. Verified
+2026-09-08: 29 library-visible expenses in SQL, 30 options in the Add Expense
+dropdown (29 + placeholder), and neither purchase-request row present.
+
+THE CATEGORY AND THE STATUS DO DIFFERENT JOBS; neither is redundant.
+  category -> keeps the row out of the LIBRARY permanently, including after a
+              decline.
+  status   -> tracks the request LIFECYCLE and is what getPurchaseRequests binds
+              the approval queue to.
+
+APPROVAL ORDER IS THE OPPOSITE OF THE LOAN PATH, deliberately. The status flip
+is guarded `.eq('status','requested')` and happens FIRST, so it is the
+concurrency gate: a second tablet's approve matches no row and returns BEFORE
+any money moves. Applying first and flipping second would let both tablets
+charge the child. Verified live: approving Minecraft set status = 'approved',
+inserted one expense_applications row, and took POCO from $12.17 to -$17.82 --
+an overdraft, allowed by design, warned about and never blocked.
+
+#### WHERE THE REQUESTING CHILD IS RECORDED -- a description tag, not a column
+
+`expenses` has no member_id: an expense is a TYPE of thing, and who it was
+applied to lives on expense_applications. A purchase request has no application
+row yet, so there is nowhere structural to put the child.
+
+created_by is the WRONG field -- it references auth.users(id), NOT
+family_members(id) (the same FK trap already recorded for chores.created_by),
+and under the kiosk's shared session it would resolve to the operator account
+for every child alike.
+
+So the member id is encoded as a `[member:<uuid>]` prefix on description, read
+back by parseMemberTag(). Deliberately cheap and deliberately reversible: it
+adds no column to a shared table for a transient row, and is only ever parsed
+on rows already filtered to category = 'purchase-request'. IF PURCHASE REQUESTS
+EVER BECOME PERMANENT HISTORY, this is the first thing to migrate to a real
+column.
+
+### SCHEMA FACTS — THE APPROVAL QUEUE IS NOW FOUR READS AND FIVE KINDS
+
+    getPendingApprovals()   chore_assignments status='completed'   cap 500
+    getChoreRequests()      chore_assignments status='requested'   cap 500
+    getLoanRequests()       loans             status='requested'   cap  50
+    getPurchaseRequests()   expenses          status='requested'   cap 100
+
+COMPOSED IN MEMORY, NEVER ONE `.in('status',[...])` QUERY. The reasoning is
+unchanged from the two-read version and gets stronger with four: one query puts
+money-bearing rows and non-money rows under ONE row cap where a backlog of the
+second can silently evict the first -- verbatim the getMemberInstances failure.
+Four reads means four caps, and no category can starve another.
+
+BOUNDEDNESS IS NOT UNIFORM, and the distinction is recorded honestly rather than
+claimed away:
+
+  STRUCTURALLY BOUNDED -- getPendingApprovals, getChoreRequests, getLoanRequests.
+  Each is bounded by a TRANSIENT status. getLoanRequests is the strongest of the
+  four: idx_loans_one_requested_per_member caps each child at ONE outstanding
+  request, so its true ceiling is the NUMBER OF CHILDREN IN THE FAMILY, not a
+  growth curve. Cap 50 has ~3 orders of magnitude of headroom.
+
+  BEHAVIOURALLY BOUNDED -- getPurchaseRequests. Also transient, but there is NO
+  unique index, because the feature deliberately allows several pending purchase
+  requests (a child may want three things and let a parent choose, which is a
+  better conversation than forcing them to pick first). Its ceiling is therefore
+  a CONVENTION -- how many things children ask for before a parent answers --
+  not a constraint. 100 is beyond any real backlog; a parent facing 100
+  unanswered purchase requests has a conversation problem, not a query problem.
+  THIS IS THE ONE READ IN THE QUEUE WHOSE BOUND A USER COULD DEFEAT. If purchase
+  requests ever need a per-child cap, a partial unique index is not the tool --
+  the feature wants several -- so it would have to be a count check or a
+  windowed read.
+
+Neither new read touches chore_assignments, so neither can compete with instance
+history for the same row cap -- the mechanism behind all five prior truncation
+bugs.
+
+#### QueueItem IS A DISCRIMINATED UNION, and it earned its keep immediately
+
+    'chore' | 'request-onetime' | 'request-roster' | 'loan-request' | 'purchase-request'
+
+It used to be one interface with `item: PendingApproval | ChoreRequest` -- which
+cost nothing, because those two shapes are structurally identical (both extend
+AssignmentWithChore). A loan request is a row from a DIFFERENT TABLE with no
+chore, no value and no due date, and a purchase request from a third.
+
+WIDENING `item` WOULD HAVE COMPILED AND RENDERED BLANK. `item.chore?.title` is
+valid optional-chaining on a type that has no `chore` only if the union permits
+it; the moment the union is discriminated, it is a type error instead.
+MEASURED: converting to a discriminated union produced compile errors at THREE
+call sites that would otherwise have rendered empty loan cards, and again at
+three more when the purchase kind was added. Structural typing caught a silent
+render bug twice in one session.
+
+Narrowing on `kind` also makes the card renderer exhaustive: adding a sixth kind
+without handling it is a type error rather than an empty card. The TYPE_LABEL
+map is `Record<QueueKind, string>`, so a new kind fails to compile until it is
+labelled.
+
+THE label-caps TYPE LABEL IS THE PRIMARY DELINEATION SIGNAL. Five card types
+share one queue; a parent must be able to tell what KIND of decision they are
+making without reading the body, so the label is the first element in every
+card: CHORE COMPLETION / CHORE REQUEST / ROSTER REQUEST / LOAN REQUEST /
+PURCHASE REQUEST.
+
+Loan and purchase requests RANK WITH THE MONEY in the sort (rank 0, alongside
+completed chores), not with the chore requests. Approving a loan commits a child
+to months of deductions and approving a purchase debits the balance
+immediately; neither has a cheap "not today" that costs nothing to get wrong.
+
+### VERIFIED 2026-09-08 — phone layout unchanged by two new card kinds
+
+Measured at a TRUE 384px inner viewport. Note the method: `resize_window`
+clamps at Chrome's ~500px minimum window width, so 390px was reached with a
+same-origin iframe sized 390px inside a 1400px window. The iframe boots to
+KioskSelect because useAuth.activeMember is plain useState with NO persistence
+-- it needs its own PIN entry, and RELOADING it loses the session again.
+
+  chrome before first actionable pixel   93px   (status band 16-91)
+  approval cards fully visible           2 of 3 (263px each, 754px viewport)
+  + button                               46x44, elementFromPoint confirms it
+  horizontal overflow                    0
+  Quick Add at 390px                     331px panel, 5 tabs, strip scrolls
+                                         (scrollWidth 659 vs clientWidth 300)
+
+Both headline figures match the Session A benchmark exactly, so adding two card
+kinds cost the phone layout nothing.
+
+QUICK ADD REGRESSION CHECK (all five tabs, after the Session A move behind +):
+Assign Chore (74 chore options), Add Expense (29 + placeholder, applied $0.10
+live), Direct Award (credited live), Direct Charge (charged live), Caught Being
+Great (all three recognition pills). Nothing was lost in the move.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch
@@ -1935,8 +2208,9 @@ This is housekeeping, not a space fix — see the footprint numbers above.
 ## Migration audit — 2026-09-01
 
 Compared `supabase/migrations/` against the live project's applied migration
-history. As of 2026-09-05 25 migrations are applied remotely; the repo captures
-15. (Was 21 / 11 on 2026-09-03, and 17 / 7 when this audit was written on
+history. As of 2026-09-08 28 migrations are applied remotely; the repo captures
+18 (the three added on 2026-09-08 were applied via the Supabase MCP and use the
+exact remote version as their filename prefix, which is the convention). (Was 21 / 11 on 2026-09-03, and 17 / 7 when this audit was written on
 2026-09-01.) The ten LIVE-BUT-NOT-IN-REPO entries below are unchanged — every
 migration added since 2026-09-01 uses the exact remote version as its filename
 prefix, which is the convention to follow.
@@ -1957,6 +2231,9 @@ CAPTURED IN THE REPO (7):
 - 20260904124019 mirror_recurrence_week_onto_assignments_archive
 - 20260905182252 add_plan_goal_id_to_chore_assignments
 - 20260905182302 mirror_plan_goal_id_in_archive_old_assignments
+- 20260908121032 add_requested_and_declined_to_loan_status
+- 20260908121110 add_decline_note_to_loans
+- 20260908123034 add_status_and_decline_note_to_expenses
 
 LIVE BUT NOT IN THE REPO (10) — all predate 2026-09-01:
 - 20260808214850 add_member_pins_to_families

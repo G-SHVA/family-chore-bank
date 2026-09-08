@@ -77,11 +77,228 @@ export const REMINDER_PENALTY_CATEGORY = 'reminder-penalty'
  */
 export const LOAN_PAYMENT_CATEGORY = 'loan-payment'
 
+/**
+ * Marker category for a CHILD'S PURCHASE REQUEST.
+ *
+ * The fourth reserved category. Like loan-payment it is one row per THING
+ * rather than one per event, but unlike every other reserved category the row
+ * starts life NOT YET APPLIED: expenses.status is 'requested' and no
+ * expense_applications row exists, so no balance has moved. Approval flips the
+ * status and applies it; a decline leaves the row inert forever.
+ *
+ * THE CATEGORY AND THE STATUS DO DIFFERENT JOBS and neither is redundant:
+ *   category -> keeps the row out of the expense LIBRARY, permanently, including
+ *               after a decline. `expenses` has no is_archived column, so the
+ *               exclusion in getFamilyExpenses is the ENTIRE mechanism.
+ *   status   -> tracks the request LIFECYCLE and is what getPurchaseRequests
+ *               binds the approval queue to.
+ */
+export const PURCHASE_REQUEST_CATEGORY = 'purchase-request'
+
 export const RESERVED_EXPENSE_CATEGORIES = [
   DIRECT_CHARGE_CATEGORY,
   REMINDER_PENALTY_CATEGORY,
   LOAN_PAYMENT_CATEGORY,
+  PURCHASE_REQUEST_CATEGORY,
 ] as const
+
+export interface PurchaseRequestInput {
+  familyId: string
+  memberId: string
+  title: string
+  amount: number
+  reason?: string
+}
+
+export interface PurchaseRequest {
+  id: string
+  family_id: string | null
+  title: string
+  description: string | null
+  amount: number
+  status: string
+  decline_note: string | null
+  created_at: string | null
+  /** The requesting child, resolved by the caller — expenses has no member FK. */
+  member: { id: string; display_name: string | null; avatar_url: string | null } | null
+}
+
+/**
+ * WHERE THE REQUESTING CHILD IS RECORDED, and why it is not a new column.
+ *
+ * `expenses` has no member_id -- an expense is a TYPE of thing, and who it was
+ * applied to lives on expense_applications. A purchase request has no
+ * application row yet, so there is nowhere structural to put the child.
+ *
+ * created_by is the wrong field: it references auth.users(id), NOT
+ * family_members(id) -- the same FK trap CLAUDE.md records for chores.created_by
+ * -- and under the kiosk's shared session it would resolve to the operator
+ * account for every child alike.
+ *
+ * So the member id is encoded in the CATEGORY-SCOPED description prefix below.
+ * That is deliberately cheap and deliberately reversible: it adds no column to
+ * a shared table for a transient row, and it is only ever read back for rows
+ * already filtered to category = 'purchase-request'. If purchase requests ever
+ * become permanent history, this is the thing to migrate to a real column.
+ */
+const MEMBER_TAG = /^\[member:([0-9a-f-]{36})\]\n?/i
+
+function tagDescription(memberId: string, reason?: string): string {
+  return `[member:${memberId}]\n${(reason ?? '').trim()}`
+}
+
+export function parseMemberTag(description: string | null): {
+  memberId: string | null
+  reason: string | null
+} {
+  if (!description) return { memberId: null, reason: null }
+  const m = description.match(MEMBER_TAG)
+  if (!m) return { memberId: null, reason: description.trim() || null }
+  const rest = description.replace(MEMBER_TAG, '').trim()
+  return { memberId: m[1], reason: rest || null }
+}
+
+/**
+ * A child asks to buy something. NO MONEY MOVES, and that is structural rather
+ * than careful: `expenses` has NO TRIGGERS AT ALL (verified against pg_trigger),
+ * so inserting here cannot touch a balance. The debit happens only when
+ * approvePurchaseRequest inserts the expense_applications row.
+ *
+ * NO LIMIT ON PENDING REQUESTS, unlike loans. A child may want three things and
+ * let a parent choose between them, which is a more useful conversation than
+ * forcing them to pick first. The consequence is recorded honestly in
+ * getPurchaseRequests: its bound is behavioural, not structural.
+ */
+export async function requestPurchase(input: PurchaseRequestInput): Promise<void> {
+  const { error } = await supabase.from('expenses').insert({
+    family_id: input.familyId,
+    title: input.title.trim(),
+    description: tagDescription(input.memberId, input.reason),
+    amount: input.amount,
+    category: PURCHASE_REQUEST_CATEGORY,
+    is_template: false,
+    status: 'requested',
+  })
+  if (error) throw chargeError(error, 'Could not send your request')
+}
+
+/**
+ * Outstanding purchase requests for the approval queue.
+ *
+ * TRUNCATION NOTE, stated honestly because it differs from the other three
+ * queue reads. This is bounded by a TRANSIENT status, so it does not grow with
+ * history -- but unlike getLoanRequests there is NO unique index capping it per
+ * child, because the feature deliberately allows several pending requests. Its
+ * ceiling is therefore behavioural (how many things children ask for before a
+ * parent answers) rather than structural.
+ *
+ * 100 is comfortably beyond any real backlog -- a parent facing 100 unanswered
+ * purchase requests has a conversation problem, not a query problem -- and it
+ * reads a DIFFERENT TABLE from chore_assignments, so it can never compete with
+ * instance history for the same cap, which is the mechanism behind all five
+ * prior truncation bugs.
+ */
+const PURCHASE_REQUEST_LIMIT = 100
+
+export async function getPurchaseRequests(familyId: string): Promise<PurchaseRequest[]> {
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('id, family_id, title, description, amount, status, decline_note, created_at')
+    .eq('family_id', familyId)
+    .eq('status', 'requested')
+    .eq('category', PURCHASE_REQUEST_CATEGORY)
+    .order('created_at', { ascending: true })
+    .limit(PURCHASE_REQUEST_LIMIT)
+  if (error) throw error
+  return (data ?? []).map((r) => ({ ...r, member: null })) as PurchaseRequest[]
+}
+
+/**
+ * One child's purchase requests, for the "Pending requests" section on My Bank.
+ *
+ * Includes ANSWERED rows inside a 48-hour window so the child actually sees the
+ * outcome -- a declined request that vanished on the next load would take the
+ * parent's reason with it, which is the whole point of asking. Same derived
+ * window as every other notification in this app; no notifications table.
+ *
+ * Filtered per child in memory rather than in the query, because the member id
+ * lives in the description tag (see parseMemberTag). The read is already bounded
+ * to one family's transient purchase-request rows, so the set being filtered is
+ * tiny by construction.
+ */
+const REQUEST_VISIBILITY_HOURS = 48
+
+export async function getChildPurchaseRequests(
+  familyId: string,
+  memberId: string
+): Promise<PurchaseRequest[]> {
+  const since = new Date(Date.now() - REQUEST_VISIBILITY_HOURS * 60 * 60 * 1000).toISOString()
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('id, family_id, title, description, amount, status, decline_note, created_at')
+    .eq('family_id', familyId)
+    .eq('category', PURCHASE_REQUEST_CATEGORY)
+    .or(`status.eq.requested,created_at.gte.${since}`)
+    .order('created_at', { ascending: false })
+    .limit(PURCHASE_REQUEST_LIMIT)
+  if (error) throw error
+  return ((data ?? []) as PurchaseRequest[]).filter(
+    (r) => parseMemberTag(r.description).memberId === memberId
+  )
+}
+
+/**
+ * Approve a purchase: flip the status, then apply it.
+ *
+ * ORDER MATTERS AND IS THE OPPOSITE OF THE LOAN PATH. The status flip is
+ * guarded with .eq('status','requested'), so it is the CONCURRENCY GATE: two
+ * parents on two tablets cannot both approve, because the second update matches
+ * no row and returns before any money moves. Applying first and flipping second
+ * would let both tablets charge the child.
+ *
+ * apply_expense inserts the expense_applications row; its AFTER INSERT trigger
+ * does the debit. No app code touches family_members.balance.
+ *
+ * OVERDRAFTS ARE ALLOWED BY DESIGN. A parent may knowingly take a child
+ * negative -- the UI warns, it never blocks. Same rule as Direct Charge.
+ */
+export async function approvePurchaseRequest(
+  expenseId: string,
+  memberId: string
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('expenses')
+    .update({ status: 'approved' })
+    .eq('id', expenseId)
+    .eq('status', 'requested')
+    .select('id')
+  if (error) throw chargeError(error, 'Could not approve the purchase')
+  if (!data || data.length === 0) {
+    throw new Error('That request was already answered. Refresh to see its current state.')
+  }
+  await applyExpense(expenseId, memberId)
+}
+
+/**
+ * Decline a purchase. The note is OPTIONAL, unlike a loan decline.
+ *
+ * A purchase decline is lighter weight: the child keeps their money and can ask
+ * again tomorrow. A loan decline commits nothing but forecloses a plan, so it
+ * earns the required sentence. Matching the chore-rejection rule rather than
+ * the loan one is the deliberate choice here.
+ */
+export async function declinePurchaseRequest(expenseId: string, note?: string): Promise<void> {
+  const { data, error } = await supabase
+    .from('expenses')
+    .update({ status: 'declined', decline_note: note?.trim() || null })
+    .eq('id', expenseId)
+    .eq('status', 'requested')
+    .select('id')
+  if (error) throw chargeError(error, 'Could not decline the request')
+  if (!data || data.length === 0) {
+    throw new Error('That request was already answered. Refresh to see its current state.')
+  }
+}
 
 /** Family expense library (only family-scoped expenses are applicable under RLS). */
 export async function getFamilyExpenses(familyId: string): Promise<Expense[]> {

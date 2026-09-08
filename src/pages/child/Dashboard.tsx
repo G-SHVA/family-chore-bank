@@ -15,7 +15,7 @@ import { ChoreCard } from '@/components/shared/ChoreCard'
 import { Card } from '@/components/ui/Card'
 import { SavingsGoalSection } from '@/components/shared/SavingsGoal'
 import { CharacterMomentBanner } from '@/components/shared/CharacterMomentBanner'
-import { LoanLine, LoanResolvedBanner } from '@/components/shared/LoanLine'
+import { LoanLine, LoanRequestLine, LoanResolvedBanner } from '@/components/shared/LoanLine'
 import { getChildLoanState, type ChildLoanState } from '@/features/loans/loanService'
 import { cn, formatCurrency } from '@/lib/utils'
 
@@ -54,7 +54,7 @@ export default function ChildDashboard() {
   const currency = family?.currency ?? 'USD'
   const familyId = family?.id
   const [data, setData] = useState<ChildDashboardData | null>(null)
-  const [loans, setLoans] = useState<ChildLoanState>({ active: null, resolved: null })
+  const [loans, setLoans] = useState<ChildLoanState>({ active: null, requested: null, resolved: null })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // Dismissed one-off banners — character recognitions AND resolved loans.
@@ -206,6 +206,13 @@ export default function ChildDashboard() {
               against this exact number. Renders nothing when there is no
               active loan — no placeholder, no "$0.00 owed". */}
           {loans.active && <LoanLine loan={loans.active} currency={currency} />}
+
+          {/* Same slot, mutually exclusive with the line above: the My Bank
+              entry point is hidden while a loan is active, and a partial
+              unique index caps a child at one outstanding request. */}
+          {!loans.active && loans.requested && (
+            <LoanRequestLine loan={loans.requested} currency={currency} />
+          )}
 
           {/* One compact line, not two stat cards. Earned-this-week and the
               streak are context for the figure above them, so they belong
