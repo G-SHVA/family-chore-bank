@@ -267,6 +267,29 @@ export default function ParentDashboard() {
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden">
       <StatusBand count={queue.length} onQuickAdd={() => setQuickAddOpen(true)} />
 
+      {/* BALANCE STRIP — DERIVED, ZERO NEW READS.
+          `children` is already in state from the getActiveMembers call the
+          dashboard has always made; that call selects '*', so `balance` was in
+          memory and unused. This does NOT restore the Children section Session A
+          deleted — it is one muted line, not a 330px card grid, and it carries
+          no action.
+
+          SUPPORTING INFORMATION, NOT A PRIMARY ELEMENT. No card, no icon, no
+          label, no gold of either weight: the status band above owns the
+          headline and the queue's approve buttons below own this screen's one
+          primary gold. Sorted by display_name because getActiveMembers orders by
+          created_at, and the order a parent glances at must not change between
+          loads. */}
+      {children.length > 0 && (
+        <p className="-mt-1 shrink-0 text-[13px] leading-tight text-text-muted">
+          {children
+            .map((c) => ({ name: c.display_name ?? 'Child', balance: c.balance }))
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((c) => `${c.name} ${formatCurrency(c.balance, currency)}`)
+            .join('  ·  ')}
+        </p>
+      )}
+
       {error && (
         <div className="shrink-0 rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-danger">
           {error}

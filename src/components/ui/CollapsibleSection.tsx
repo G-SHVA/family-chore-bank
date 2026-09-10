@@ -21,19 +21,51 @@ import { cn } from '@/lib/utils'
  *    the title and chevron are inside the toggle button — `actions` sits beside
  *    it, so a "Create Chore" button in the header doesn't also collapse the
  *    section that contains it.
+ *
+ * 3. `variant` is a PROP, NOT A className OVERRIDE, and that is not a style
+ *    preference. cn() is a plain join with no tailwind-merge, so passing
+ *    `titleClassName="text-[11px]"` alongside the built-in `text-2xl` would
+ *    leave BOTH in the class list and let stylesheet order decide — the exact
+ *    failure already recorded for Modal's max-w and Button's height in
+ *    CLAUDE.md. Emitting exactly one title class per variant makes that
+ *    unrepresentable.
  */
+
+/**
+ * 'display' — Cormorant 24px, the section heading used on every parent screen
+ *             and on the child Chores/Claim screens. The default, so every
+ *             existing caller is unchanged.
+ * 'label'   — label-caps Inter 11px muted, matching the surrounding labels on
+ *             the child's My Bank screen ("CURRENT BALANCE", "EARNED THIS
+ *             MONTH", "REQUEST A LOAN"). A 24px serif heading was the only
+ *             element on that screen not in that voice.
+ */
+export type CollapsibleVariant = 'display' | 'label'
+
+const TITLE_CLASS: Record<CollapsibleVariant, string> = {
+  display: 'text-2xl',
+  label: 'label-caps text-[11px] text-text-muted',
+}
+
+const CHEVRON_CLASS: Record<CollapsibleVariant, string> = {
+  display: 'h-5 w-5',
+  label: 'h-4 w-4',
+}
 export function CollapsibleSection({
   title,
   maxHeight,
   defaultOpen = false,
   actions,
   meta,
+  variant = 'display',
   children,
 }: {
   title: string
   /** Height cap for the scrolling body, in px. */
   maxHeight: number
   defaultOpen?: boolean
+  /** Header voice. See CollapsibleVariant — a prop, never a className. */
+  variant?: CollapsibleVariant
   /** Rendered beside the title, outside the toggle — e.g. a Create button. */
   actions?: ReactNode
   /** Small muted text after the title, e.g. a count. */
@@ -63,11 +95,12 @@ export function CollapsibleSection({
         >
           <ChevronDown
             className={cn(
-              'h-5 w-5 shrink-0 text-antique transition-transform duration-300',
+              'shrink-0 text-antique transition-transform duration-300',
+              CHEVRON_CLASS[variant],
               open && 'rotate-180'
             )}
           />
-          <h2 className="text-2xl">{title}</h2>
+          <h2 className={TITLE_CLASS[variant]}>{title}</h2>
           {meta && <span className="label-caps text-[10px] text-text-muted">{meta}</span>}
         </button>
         {actions}

@@ -21,8 +21,50 @@ export interface MonthlySummary {
 }
 
 /**
+ * The child's CURRENT BALANCE, read from the authoritative column.
+ *
+ * WHY THIS EXISTS AT ALL. My Bank used to take its headline figure from
+ * `getTransactionHistory()[0].runningBalance` — a client-side sum of the ledger
+ * walked forward from zero. CLAUDE.md documents the trap that creates: the Bank
+ * screen and the child dashboard read two different sources for one number and
+ * can therefore disagree, and any sanctioned write moves BOTH by the same
+ * amount, so a divergence between them cannot be closed by crediting or
+ * charging the child.
+ *
+ * It is also the figure most exposed to truncation-class instance 5.
+ * getTransactionHistory issues two UNBOUNDED selects; the moment a child's
+ * history outgrows a PostgREST page the ledger starts omitting old rows AND the
+ * running balance summed from them is silently wrong — and it was wrong in the
+ * largest text on the screen.
+ *
+ * This is one indexed single-row read of the same trigger-managed column
+ * getChildDashboard() already uses, so the two screens now agree by
+ * construction. It costs a query but REPLACES an unbounded one: deferring the
+ * ledger to first expand is only possible because the balance no longer
+ * depends on it.
+ */
+export async function getMemberBalance(memberId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('family_members')
+    .select('balance')
+    .eq('id', memberId)
+    .single()
+  if (error) throw error
+  return data?.balance ?? 0
+}
+
+/**
  * Builds the child's ledger: approved chores (income) + applied expenses
  * (expense), sorted newest-first with a running balance.
+ *
+ * DEFERRED, NOT CALLED ON LOAD. My Bank fetches this only when the child first
+ * expands Transaction History — see TransactionHistorySection in Bank.tsx.
+ * Nothing above that section depends on it any more.
+ *
+ * STILL truncation-class instance 5: both selects below are unbounded, so the
+ * running balance is a best effort over whatever PostgREST returns. Deferring
+ * the read removes its cost from every load; it does NOT fix the bound. The
+ * balance card no longer rides on it, which is the part that mattered.
  */
 export async function getTransactionHistory(memberId: string): Promise<Transaction[]> {
   const [choresRes, expensesRes] = await Promise.all([

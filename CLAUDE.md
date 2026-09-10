@@ -257,6 +257,20 @@ TRUNCATION CLASS -- FOUR INSTANCES FIXED:
    month figures were moved onto member_earnings_summary() plus a date-bounded
    expense read on 2026-09-02, precisely so the money at the top of that screen
    does not ride on this. Fix before public launch.
+   NARROWED 2026-09-10, STILL NOT FIXED. Two things changed, and the
+   distinction between them matters. (a) The read is now DEFERRED: it fires
+   only when a child expands Transaction History, so a normal My Bank load
+   issues neither select -- verified live, chore_assignments does not appear in
+   the load's requests at all. (b) The BALANCE CARD no longer rides on it. It
+   used to read `getTransactionHistory()[0].runningBalance`, so the single
+   largest figure on the screen was a client-side sum of a silently-capped
+   read; it now reads family_members.balance via getMemberBalance(). The BOUND
+   IS STILL ABSENT -- under "All" both selects are as unbounded as they ever
+   were, and the running balance shown there is still a best effort over
+   whatever PostgREST returns. What has gone is the blast radius: a truncated
+   ledger is now a wrong LIST under one filter, not a wrong BALANCE on every
+   load. Measured 2026-09-10: POCO's ledger is 127 rows, well inside the cap,
+   and its running total agrees with his balance at $8.32.
 
 TRUNCATION CLASS -- PREVENTED BY DESIGN (getApprovalQueue) [2026-09-07]:
 The merged approval queue uses two independent reads (getPendingApprovals +
@@ -1131,6 +1145,13 @@ warn you it has gone stale.
   display-only and the fix is a product decision about how much history a
   child's ledger should show, not a one-line bound. The MONTH FIGURES above it
   no longer depend on it. Fix before public launch.
+  STILL OPEN after 2026-09-10, but smaller: the read is deferred to first
+  expand and the balance card no longer derives from it (see the narrowed note
+  under TRUNCATION CLASS INSTANCE 5 above). The unbounded selects themselves
+  are untouched. The remaining decision is the same one: how much history a
+  child's ledger should show. Note the date filter now shipped gives that
+  decision a natural shape -- three of its four ranges are already windows, so
+  bounding the read per range is a smaller change than it was.
 
 - CHILD DASHBOARD QUERY BUDGET: 2 reads, as of the loan session. The completion
   rate read (getInstancesDueBetween) was REMOVED and the loan state read
@@ -2060,6 +2081,169 @@ QUICK ADD REGRESSION CHECK (all five tabs, after the Session A move behind +):
 Assign Chore (74 chore options), Add Expense (29 + placeholder, applied $0.10
 live), Direct Award (credited live), Direct Charge (charged live), Caught Being
 Great (all three recognition pills). Nothing was lost in the move.
+
+## SHIPPED 2026-09-10 — parent balance strip, My Bank collapse, ledger date filter
+
+Three contained changes. Balances opened and closed at POCO $8.32 /
+Cuddles $11.95, with $0.00 variance and no money moved at any point.
+
+### The parent dashboard balance strip — DERIVED, ZERO NEW READS
+
+One muted 13px line under the status band: `Cuddles $11.95 · POCO $8.32`.
+
+IT COSTS NOTHING BECAUSE getActiveMembers() SELECTS `*`. The parent dashboard
+already called it — `children` feeds Quick Add's child picker — so `balance`
+was already in memory on every load and simply unused. No query changed, no
+select changed. Verified live 2026-09-10: a dashboard load issues 5 logical
+reads (getActiveMembers + getApprovalQueue's four), and NOT ONE of them selects
+`balance`. The strip is a render, not a read.
+
+This is NOT the Children section Session A deleted. That was a 330px card grid
+with actions in it; this is 28px of text with none. Measured: 28px exactly from
+the status band's bottom edge to the strip's, and left-aligned with the queue
+column to the pixel (both at x=308 in a 1384px window).
+
+MUTED, NEVER GOLD — not even antique. The status band owns the headline and the
+queue's approve buttons own this screen's one primary gold; a balance readout
+is supporting information and must not outrank either. Colour verified as
+#8A8680 (--color-text-secondary).
+
+SORTED BY display_name, because getActiveMembers orders by created_at. A figure
+a parent glances at must not change position between loads. `display_name` is
+nullable in the generated types, so it takes the codebase's existing
+`?? 'Child'` fallback and the sort keys off the NAME, not the composed string —
+sorting the joined string would order "Sam" against "Samantha" by the space
+character rather than by the name.
+
+At 390px the line needs 181px of the 262px available: one line, 81px spare.
+
+### My Bank — the ledger is collapsed, and getTransactionHistory is DEFERRED
+
+Both sections on the child's My Bank screen are now CollapsibleSections
+(Pending requests, hidden when empty; Transaction history, collapsed). The
+balance card and the month summary stay always-visible above them.
+
+#### THE DEFERRAL FORCED A REAL FIX — read this before touching the balance card
+
+`getTransactionHistory` could not simply be deferred, because line 87 read:
+
+    const balance = txns[0]?.runningBalance ?? 0
+
+The balance card — the screen's primary job — was derived from the ledger.
+Deferring the read would have rendered $0.00 on load. This is the exact trap
+already documented above ("the child's My Bank header does NOT read
+family_members.balance"), and the deferral is what made it unavoidable.
+
+getMemberBalance() now reads family_members.balance — one indexed single-row
+read of the same trigger-managed column getChildDashboard() already uses. Two
+consequences, both improvements:
+
+  1. THE BANK SCREEN AND THE DASHBOARD NOW AGREE BY CONSTRUCTION. They read one
+     source. The documented divergence class — where the two disagree and no
+     credit or charge can close the gap, because both move equally — is gone
+     from this screen.
+  2. THE BALANCE IS OFF THE TRUNCATION PATH. It was the figure most exposed to
+     instance 5: a client-side sum of two silently-capped reads, rendered at
+     56px. It no longer depends on them at all.
+
+NET READS: one UNBOUNDED read out, one single-row indexed read in. Verified
+live 2026-09-10 — a My Bank load issues 6 logical reads (getMemberBalance,
+getMonthlyBankSummary's two, getActiveGoal, getChildLoanState,
+getChildPurchaseRequests) and `chore_assignments` DOES NOT APPEAR AT ALL.
+
+#### The deferral mechanism: the component's MOUNT is the first expand
+
+CollapsibleSection already keeps its body unmounted until first open
+(`hasOpened`), for the Recharts zero-height reason. TransactionHistorySection
+is passed as that body's children and fetches in its own mount effect, so no
+`hasOpened` state was duplicated in Bank.tsx and CollapsibleSection needed no
+callback prop. React creates the element on every Bank render, but creating an
+element does not run a component.
+
+Verified live: body childElementCount 0 before first expand; the two ledger
+selects fire on expand; and COLLAPSE + RE-EXPAND ISSUES ZERO REQUESTS — the
+section stays mounted, so the rows are re-rendered, not re-read.
+
+### The ledger date filter — CLIENT-SIDE, family timezone, This Month default
+
+Four pills inside the section: This Week / This Month / Last Month / All.
+
+FILTERING COSTS NO READS. Every bounded range is a SUBSET of the one fetch, so
+it is a client-side filter over rows already in memory. Verified: 0 REST calls
+across all four range switches.
+
+BOUNDARIES RESOLVE IN THE FAMILY'S ZONE, via lib/time's startOfWeek /
+startOfMonth / endOfMonth. No timezone literal appears in the code. Last month
+is anchored by stepping ONE DAY BACK from the first of this month rather than
+by subtracting from the month number — no January wrap-around arithmetic, and
+it goes through addDays, which is DST-safe.
+
+VERIFIED AGAINST SQL IN THE SAME ZONE, which is the only comparison worth
+making (see the timezone note above — a UTC-resolved verification query answers
+a different question). All four counts matched exactly for POCO: 12 / 40 / 87 /
+127, screen against Postgres.
+
+#### RUNNING BALANCE IS HIDDEN UNDER EVERY RANGE BUT "All"
+
+Each row's runningBalance is its position in the FULL history. Shown against a
+filtered subset the column appears to jump by amounts no visible row explains.
+A child who cannot reconcile the numbers in front of them stops trusting the
+account, which is the one thing this screen exists to build. The correct
+figures are one tap away under All — where, verified live, the ledger's own top
+running total ($8.32) equals the balance card and family_members.balance.
+
+#### VERIFYING THE EMPTY STATE WITHOUT WRITING TO LIVE ACCOUNTS
+
+Neither child had an empty range in any of the four, so the
+`visible.length === 0` branch was unreachable from real data. Following the
+Session A precedent, window.fetch was stubbed IN THE BROWSER for exactly two
+GET selects, returning one row dated last month — so This Week and This Month
+rendered empty while Last Month and All rendered the row, exercising both
+branches. Every other request went to the real network untouched, confirmed
+from the intercept log before the result was trusted: zero non-read requests
+during the stubbed window.
+
+RECORDED HONESTLY: the chore_assignments matcher was broader than intended and
+also caught the child dashboard's approved-rows read while passing through it.
+Read-only, no writes, no effect beyond that screen's display during the test —
+but a matcher for this purpose should key on something unique to the call
+(the embedded `chore:chores(title, value)` select), not on status alone.
+
+### CollapsibleSection gained a `variant`, and it is a PROP for a reason
+
+`variant: 'display' | 'label'` emits exactly ONE title class.
+'display' (Cormorant 24px) is the default, so all seven existing callers are
+byte-identical. 'label' is label-caps Inter 11px muted.
+
+A className override would have been the bug already recorded twice — Modal's
+max-w and Button's height. cn() is a plain join with no tailwind-merge, so
+passing `titleClassName="text-[11px]"` alongside the built-in `text-2xl` leaves
+BOTH in the class list and stylesheet order decides. RULE, now three times
+over: a component's SIZE or VOICE is a prop that emits one class, never a
+className the caller passes in.
+
+WHY MY BANK USES 'label'. Measured on that screen: CURRENT BALANCE, EARNED THIS
+MONTH and REQUEST A LOAN are all label-caps Inter uppercase muted. A 24px
+Cormorant heading was the ONLY element on it in a different voice. Verified
+after the change: the section header's font, size, colour and text-transform
+are now identical to CURRENT BALANCE's.
+
+### The range pills stop at 44px, and 44 is a FLOOR
+
+SchedulePicker's day pills step h-11 -> h-14 (56px) from md. Reused here they
+read as four buttons rather than a filter, sitting directly under a 56px
+balance figure that should out-weigh them. Now a flat h-11 at every width, and
+the row is capped at max-w-md: 185x56 -> 109x44 on a tablet.
+
+DO NOT SHRINK THEM FURTHER without shrinking the hit area some other way. These
+are CHILD-facing touch targets and 44px is the Apple/Google minimum the
+codebase already treats as its floor (Button `lgResponsive`). The kiosk's own
+standard is 64px; 44 is already the exception, not the starting point.
+
+THE GRID IS WHAT GUARANTEES ONE ROW, not the widths. Content-sized pills would
+wrap at 390px once the labels no longer fit; `grid-cols-4` makes the four
+shrink together instead. Verified at the child screen's true 342px content
+width: four 80px pills, ONE row, no clipped text, zero horizontal overflow.
 
 ## NEXT FEATURE — none currently queued
 
