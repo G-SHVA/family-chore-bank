@@ -6,7 +6,7 @@ import {
   getTransactionHistory,
   getMonthlyBankSummary,
   getMemberBalance,
-  type Transaction,
+  type LedgerPage,
   type MonthlySummary,
 } from '@/features/bank/bankService'
 import { BalanceDisplay } from '@/components/shared/BalanceDisplay'
@@ -218,7 +218,9 @@ export default function ChildBank() {
         maxHeight={HISTORY_MAX_HEIGHT}
         variant="label"
       >
-        {memberId && <TransactionHistorySection memberId={memberId} currency={currency} />}
+        {memberId && (
+          <TransactionHistorySection memberId={memberId} currency={currency} balance={balance} />
+        )}
       </CollapsibleSection>
 
       {/* REQUESTS LIVE BELOW THE LEDGER, not above it. My Bank's one job is
@@ -321,8 +323,18 @@ function ledgerBounds(key: LedgerRange): { from: Date; to: Date } | null {
   const now = new Date()
   if (key === 'week') return { from: startOfWeek(now), to: now }
   if (key === 'month') return { from: startOfMonth(now), to: now }
-  const anchor = addDays(startOfMonth(now), -1)
-  return { from: startOfMonth(anchor), to: endOfMonth(anchor) }
+  return { from: ledgerFetchSince(now), to: endOfMonth(addDays(startOfMonth(now), -1)) }
+}
+
+/**
+ * The lower bound of the ONE bounded fetch — the first of LAST month. Every
+ * range except All is a subset of [here, now], which is what lets This Week,
+ * This Month and Last Month share a single read and switch between each other
+ * for free. Last Month's own `from` is derived from this same function so the
+ * fetch window and the filter window cannot drift apart.
+ */
+function ledgerFetchSince(now: Date = new Date()): Date {
+  return startOfMonth(addDays(startOfMonth(now), -1))
 }
 
 /**
@@ -337,42 +349,67 @@ function ledgerBounds(key: LedgerRange): { from: Date; to: Date } | null {
  * collapsing and re-expanding re-renders already-fetched rows rather than
  * re-reading them.
  *
- * FILTERING IS CLIENT-SIDE, AND DELIBERATELY SO. Every bounded range is a
- * SUBSET of what the one fetch already returned, so changing range costs no
- * read at all.
+ * TWO TIERS, TWO READS AT MOST. The mount effect fetches ONE date-bounded
+ * window from the first of last month (ledgerFetchSince), which This Week,
+ * This Month and Last Month all filter client-side — switching between those
+ * three costs no read. All is fetched separately, capped and newest-first, on
+ * the child's FIRST tap of that pill and then held. See getTransactionHistory
+ * for the horizon trim and the balance anchor that make the capped read honest.
  */
 function TransactionHistorySection({
   memberId,
   currency,
+  balance,
 }: {
   memberId: string
   currency: string
+  balance: number
 }) {
-  const [txns, setTxns] = useState<Transaction[]>([])
-  const [loading, setLoading] = useState(true)
+  const [recent, setRecent] = useState<LedgerPage | null>(null)
+  const [all, setAll] = useState<LedgerPage | null>(null)
   const [error, setError] = useState<string | null>(null)
   // This Month, not All. A child opening their history wants the period they
-  // are living in; the full archive is one tap further, and it is the only
-  // range still exposed to truncation-class instance 5.
+  // are living in; the full archive is one tap further and one read dearer.
   const [range, setRange] = useState<LedgerRange>('month')
 
   useEffect(() => {
     let alive = true
     void (async () => {
       try {
-        const t = await getTransactionHistory(memberId)
-        if (alive) setTxns(t)
+        const page = await getTransactionHistory(memberId, { since: ledgerFetchSince(), balance })
+        if (alive) setRecent(page)
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : 'Could not load your history.')
-      } finally {
-        if (alive) setLoading(false)
       }
     })()
     return () => {
       alive = false
     }
+    // `balance` is read once at mount on purpose: the section mounts after the
+    // screen has loaded it, and re-fetching the ledger because a prop ticked
+    // would re-issue the read this whole design exists to avoid.
   }, [memberId])
 
+  // The All tier, fetched once on first demand and never on load.
+  useEffect(() => {
+    if (range !== 'all' || all !== null) return
+    let alive = true
+    void (async () => {
+      try {
+        const page = await getTransactionHistory(memberId, { since: null, balance })
+        if (alive) setAll(page)
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : 'Could not load your history.')
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [range, all, memberId])
+
+  const page = range === 'all' ? all : recent
+  const loading = page === null && error === null
+  const txns = page?.transactions ?? []
   const bounds = ledgerBounds(range)
   const visible = bounds
     ? txns.filter((t) => {
@@ -495,6 +532,15 @@ function TransactionHistorySection({
             </div>
           ))}
         </div>
+      )}
+
+      {/* Only when a select actually hit its cap. Says what IS shown rather than
+          what is missing: the rows here are complete and every running figure
+          on them is exact, which is the honest thing to tell a child. */}
+      {page?.truncated && visible.length > 0 && (
+        <p className="px-1 text-center text-xs text-text-muted">
+          Showing your {visible.length} most recent transactions.
+        </p>
       )}
     </div>
   )

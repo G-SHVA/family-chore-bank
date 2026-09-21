@@ -271,6 +271,12 @@ TRUNCATION CLASS -- FOUR INSTANCES FIXED:
    ledger is now a wrong LIST under one filter, not a wrong BALANCE on every
    load. Measured 2026-09-10: POCO's ledger is 127 rows, well inside the cap,
    and its running total agrees with his balance at $8.32.
+   CLOSED 2026-09-21. Two-tier fetch with both selects ordered DESC under
+   an explicit LEDGER_CAP (500), a horizon trim when either select fills
+   its cap, and the running balance anchored to family_members.balance
+   and walked BACKWARDS. See "SHIPPED 2026-09-21" below for the mechanism
+   and why the anchor direction is the important part. All five instances
+   of the class are now fixed or prevented.
 
 TRUNCATION CLASS -- PREVENTED BY DESIGN (getApprovalQueue) [2026-09-07]:
 The merged approval queue uses two independent reads (getPendingApprovals +
@@ -1118,6 +1124,9 @@ warn you it has gone stale.
   Framer Motion (animations), goalService/analyticsService are good lazy-load
   targets. Use dynamic import() on route level — each page loads only what it
   needs.
+  DONE 2026-09-21 — see BUNDLE CODE-SPLITTING below. Framer Motion could NOT
+  be split out: PinPad renders inside Modal, which animates with it, so it is
+  a first-screen dependency by construction.
 
 - ROSTER SIZE: 85 active chores across two children producing 19-28% completion
   rates. Book recommends 3-5 chores per child to start. Review and pause
@@ -1152,6 +1161,13 @@ warn you it has gone stale.
   child's ledger should show. Note the date filter now shipped gives that
   decision a natural shape -- three of its four ranges are already windows, so
   bounding the read per range is a smaller change than it was.
+  CLOSED 2026-09-21 — see the truncation-class note above and "SHIPPED
+  2026-09-21". Removed from the pre-launch list.
+
+- BUNDLE CODE-SPLITTING — DONE 2026-09-21. Route-level React.lazy for all
+  nine pages behind the PIN plus stable vendor chunks. Initial load 1,150 kB
+  -> 537 kB (321 -> 164 kB gzip). See "SHIPPED 2026-09-21". The first item
+  in this list (bundle size) is CLOSED; the 500 kB Vite warning is gone.
 
 - CHILD DASHBOARD QUERY BUDGET: 2 reads, as of the loan session. The completion
   rate read (getInstancesDueBetween) was REMOVED and the loan state read
@@ -2245,12 +2261,113 @@ wrap at 390px once the labels no longer fit; `grid-cols-4` makes the four
 shrink together instead. Verified at the child screen's true 342px content
 width: four 80px pills, ONE row, no clipped text, zero horizontal overflow.
 
+## SHIPPED 2026-09-21 — code splitting, and truncation instance 5 closed
+
+Two changes, deployed separately. Balances opened and closed at POCO $15.37 /
+Cuddles $2.50 with $0.00 variance; no PIN was entered by Claude and no row
+was written by any verification step.
+
+### Route-based code splitting
+
+App.tsx lazy-loads all nine pages behind the PIN. KioskSelect, Login, both
+layouts, PinPad and useAuth stay in the entry chunk. vite.config.ts pins
+react / supabase / framer-motion / lucide to named vendor chunks so their
+hashes survive an app-only deploy and the one-year immutable cache on
+/assets/* actually pays off.
+
+  initial load     1,150 kB / 321 kB gz  ->  537 kB / 164 kB gz
+  chunks           1                     ->  24
+  Recharts         in the entry          ->  own 365 kB chunk, reached only
+                                             from Achievements and Family Week
+
+SUSPENSE IS PER ROUTE ELEMENT, NOT AROUND <Routes>. A boundary above the
+layouts unmounts the sidebar / bottom nav while a chunk loads, so the chrome
+would flash on every first visit to a route. The fallback is an EMPTY bg-bg
+div — no spinner: a cached chunk resolves in a frame, and a spinner would only
+flicker.
+
+FRAMER MOTION STAYS IN THE INITIAL LOAD, and that is a fact about the app,
+not an oversight: PinPad renders inside Modal, which animates with it. Moving
+it out means changing Modal's animation. Recharts also loads when Family Week
+OPENS (AnalyticsTab is a static import there), not when the Analytics section
+expands; lazy-loading that one tab is the obvious follow-up if it ever
+matters.
+
+VERIFICATION NOTE. `vite preview` serves the built dist, so it lands on the
+Login screen (credentials are force-defined to "" at build). Behind-the-PIN
+routes need a real sign-in plus PIN, which Gary performed; the chunk log and
+console were then read from that session. A deep route on a fresh load with
+no session serves the SPA shell and boots to Login WITHOUT fetching any page
+chunk, which is the AppGate ordering working as intended.
+
+### getTransactionHistory — two tiers, capped, anchored to the balance
+
+THE SIGNATURE CHANGED: `getTransactionHistory(memberId, { since, balance })`
+returns `LedgerPage { transactions, truncated }`. Nothing else calls it.
+
+TWO TIERS, ONE FUNCTION. On first expand Bank.tsx passes `since` = the first
+of LAST month (ledgerFetchSince), one date-bounded read that This Week, This
+Month and Last Month all filter client-side — so switching between those
+three still costs ZERO reads, verified live. It calls again with
+`since: null` only when the child first taps All, and holds the result.
+Last Month's own `from` is derived from the same ledgerFetchSince() so the
+fetch window and the filter window cannot drift apart.
+
+BOTH SELECTS ARE ORDERED DESC UNDER LEDGER_CAP (500), so when the cap bites
+it is the OLDEST rows that fall off. The cap is the payload guard the
+standing rule requires; `since` is the bound for the ranges that have one.
+
+THE HORIZON TRIM is what makes a capped All honest rather than merely
+bounded. The two selects are capped INDEPENDENTLY: if income filled its cap
+at date H and expenses did not, rows older than H would show expenses with
+their income neighbours missing. So when either select returns exactly
+LEDGER_CAP rows, the merged list is cut to rows STRICTLY newer than the
+newest such horizon — strictly, because rows sharing the boundary timestamp
+may have been split by the cap. What survives is complete by construction,
+and the note reads "Showing your N most recent transactions." — what IS
+shown, not what is missing. Verified with LEDGER_CAP temporarily 5: both
+selects returned 5, the horizon was the expense boundary, exactly 4 rows
+were strictly newer, the screen showed those 4 with the note, and Postgres
+computed the same 4 from the same rule.
+
+THE RUNNING BALANCE IS ANCHORED TO family_members.balance AND WALKED
+BACKWARDS, not summed forward from zero. Newest row = the balance card's
+figure exactly; each older row = the newer row's figure minus the newer
+row's effect, rounded to the cent at each step. This is what lets a capped
+window carry correct figures on every row it shows: the anchor is known
+regardless of how much older history was never fetched. Verified on all
+168 of POCO's rows: 0 chain breaks, top row $15.37 = family_members.balance,
+and the oldest row bottoms out at an implied opening balance of $0.00.
+
+THE TRADE-OFF, APPROVED BY GARY 2026-09-21: should the ledger and the balance
+ever diverge again (the 2026-09-03 class), the gap now surfaces as a NON-ZERO
+IMPLIED OPENING BALANCE at the bottom of All, not as a mismatch at the top.
+The child's trust anchor is the balance card, and the top of the ledger must
+always agree with it. A non-zero opening balance is the diagnostic: if the
+oldest row's running figure minus its own amount is not $0.00, the ledger
+and family_members.balance disagree by exactly that much. Diagnose before
+correcting, as before.
+
+`balance` IS READ ONCE, AT THE SECTION'S MOUNT. The section mounts after the
+screen has loaded the balance, and re-fetching the ledger because a prop
+ticked would re-issue the very read this design exists to avoid. On this
+kiosk a balance cannot change under an open Bank screen without a
+navigation.
+
+VERIFYING WITHOUT THE EXTENSION'S NETWORK TAB. The Claude-in-Chrome network
+capture did not see this tab's fetches. performance.getEntriesByType(
+'resource') is the browser's own record and cannot miss one; counting
+entries whose URL contains /rest/v1/ before and after each pill tap gave the
+zero-read evidence for the range switches. Note dev StrictMode double-runs
+mount effects, so the bounded pair appears TWICE in dev and once in
+production.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch
-checklist above: getTransactionHistory (truncation class instance 5), bundle
-code-splitting, SCHEMA COMPLETENESS (the from-scratch rebuild), and the roster
-reduction described immediately above.
+checklist above: SCHEMA COMPLETENESS (the from-scratch rebuild) and the two
+pending-approval counts on Family Week vs the dashboard. Truncation instance
+5, bundle code-splitting and the roster reduction are all closed.
 
 ## V2 Architecture Notes
 

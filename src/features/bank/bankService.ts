@@ -54,63 +54,134 @@ export async function getMemberBalance(memberId: string): Promise<number> {
 }
 
 /**
- * Builds the child's ledger: approved chores (income) + applied expenses
- * (expense), sorted newest-first with a running balance.
- *
- * DEFERRED, NOT CALLED ON LOAD. My Bank fetches this only when the child first
- * expands Transaction History — see TransactionHistorySection in Bank.tsx.
- * Nothing above that section depends on it any more.
- *
- * STILL truncation-class instance 5: both selects below are unbounded, so the
- * running balance is a best effort over whatever PostgREST returns. Deferring
- * the read removes its cost from every load; it does NOT fix the bound. The
- * balance card no longer rides on it, which is the part that mattered.
+ * Payload guard on EACH of the ledger's two selects. Not the correctness
+ * mechanism: bounded ranges are bounded by `since`, and All is made honest by
+ * the horizon trim below. This is the cap CLAUDE.md's standing rule requires
+ * every read to state for itself — an invisible server-side max-rows is worse
+ * than a visible one.
  */
-export async function getTransactionHistory(memberId: string): Promise<Transaction[]> {
-  const [choresRes, expensesRes] = await Promise.all([
-    supabase
-      .from('chore_assignments')
-      .select('id, approved_at, chore:chores(title, value)')
-      .eq('assigned_to', memberId)
-      .eq('is_template', false)
-      .eq('status', 'approved')
-      .not('approved_at', 'is', null),
-    supabase
-      .from('expense_applications')
-      .select('id, applied_at, amount, expense:expenses(title)')
-      .eq('family_member_id', memberId),
-  ])
+export const LEDGER_CAP = 500
+
+export interface LedgerPage {
+  /** Newest first. Every row's runningBalance is exact — see the anchor note. */
+  transactions: Transaction[]
+  /** True when a select hit LEDGER_CAP and rows older than the safe horizon were dropped. */
+  truncated: boolean
+}
+
+export interface LedgerOptions {
+  /** Lower bound on the window, or null for "All" (capped, newest first). */
+  since: Date | null
+  /** family_members.balance — the anchor the running balance walks back from. */
+  balance: number
+}
+
+type ChoreRow = { id: string; approved_at: string | null; chore: { title: string | null; value: number } | null }
+type ExpRow = { id: string; applied_at: string | null; amount: number; expense: { title: string | null } | null }
+type Unbalanced = Omit<Transaction, 'runningBalance'>
+
+/**
+ * Builds the child's ledger: approved chores (income) + applied expenses
+ * (expense), newest first, with a running balance on every row.
+ *
+ * TRUNCATION-CLASS INSTANCE 5, CLOSED 2026-09-21. Both selects used to be
+ * unbounded and the running balance was summed forward from $0 over whatever
+ * PostgREST returned. Now:
+ *
+ * TWO TIERS, ONE FUNCTION. Bank.tsx calls this with `since` set to the start
+ * of LAST month on first expand — one date-bounded read that covers This Week,
+ * This Month and Last Month, so switching between those three still costs no
+ * read. It calls again with `since: null` only when the child first taps All.
+ *
+ * ORDERED DESC AND CAPPED, so when the cap bites it is the OLDEST rows that
+ * fall off, never the ones the child is looking for.
+ *
+ * THE HORIZON TRIM is what makes a capped result honest rather than merely
+ * bounded. The two selects are capped independently: if income hit LEDGER_CAP
+ * at some date H and expenses did not, rows older than H would show expenses
+ * with their income neighbours missing, and a running balance walked across
+ * them would be wrong. So when either select returns exactly LEDGER_CAP rows,
+ * the merged list is cut to rows STRICTLY NEWER than the newest such horizon.
+ * Strictly, because rows sharing the boundary timestamp may have been split by
+ * the cap. What survives is complete by construction.
+ *
+ * THE RUNNING BALANCE IS ANCHORED TO family_members.balance AND WALKED
+ * BACKWARDS, not summed forward from zero. The newest row reads the balance
+ * card's figure exactly; each older row is the newer row's figure minus the
+ * newer row's effect. This is what lets a capped window carry correct figures
+ * on every row it shows: the anchor is known regardless of how much older
+ * history was never fetched. The trade-off, accepted deliberately: should the
+ * ledger and the balance ever diverge again (see the 2026-09-03 reconciliation
+ * in CLAUDE.md), the gap surfaces as a non-zero implied OPENING balance at the
+ * bottom of All, not as a mismatch at the top. The child's trust anchor is the
+ * balance card; the top of the ledger must always agree with it.
+ */
+export async function getTransactionHistory(
+  memberId: string,
+  opts: LedgerOptions
+): Promise<LedgerPage> {
+  let choresQ = supabase
+    .from('chore_assignments')
+    .select('id, approved_at, chore:chores(title, value)')
+    .eq('assigned_to', memberId)
+    .eq('is_template', false)
+    .eq('status', 'approved')
+    .not('approved_at', 'is', null)
+    .order('approved_at', { ascending: false })
+    .limit(LEDGER_CAP)
+  let expensesQ = supabase
+    .from('expense_applications')
+    .select('id, applied_at, amount, expense:expenses(title)')
+    .eq('family_member_id', memberId)
+    .not('applied_at', 'is', null)
+    .order('applied_at', { ascending: false })
+    .limit(LEDGER_CAP)
+  if (opts.since) {
+    const iso = opts.since.toISOString()
+    choresQ = choresQ.gte('approved_at', iso)
+    expensesQ = expensesQ.gte('applied_at', iso)
+  }
+
+  const [choresRes, expensesRes] = await Promise.all([choresQ, expensesQ])
   if (choresRes.error) throw choresRes.error
   if (expensesRes.error) throw expensesRes.error
 
-  type ChoreRow = { id: string; approved_at: string | null; chore: { title: string | null; value: number } | null }
-  type ExpRow = { id: string; applied_at: string | null; amount: number; expense: { title: string | null } | null }
-
-  const income = ((choresRes.data ?? []) as unknown as ChoreRow[]).map((r) => ({
+  const income: Unbalanced[] = ((choresRes.data ?? []) as unknown as ChoreRow[]).map((r) => ({
     id: `c_${r.id}`,
     date: r.approved_at as string,
     description: r.chore?.title ?? 'Chore',
     type: 'income' as const,
     amount: r.chore?.value ?? 0,
   }))
-  const expenses = ((expensesRes.data ?? []) as unknown as ExpRow[]).map((r) => ({
+  const expenses: Unbalanced[] = ((expensesRes.data ?? []) as unknown as ExpRow[]).map((r) => ({
     id: `e_${r.id}`,
-    date: (r.applied_at ?? new Date(0).toISOString()) as string,
+    date: r.applied_at as string,
     description: r.expense?.title ?? 'Expense',
     type: 'expense' as const,
     amount: r.amount,
   }))
 
-  // Oldest -> newest to compute running balance, then reverse for display.
-  const merged = [...income, ...expenses].sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-  )
-  let running = 0
-  const withRunning = merged.map((t) => {
-    running += t.type === 'income' ? t.amount : -t.amount
-    return { ...t, runningBalance: running }
+  // Each select is ordered DESC, so its LAST row is the oldest it returned.
+  // A select that filled its cap is complete only for rows newer than that.
+  const horizons: number[] = []
+  if (income.length === LEDGER_CAP) horizons.push(new Date(income[income.length - 1].date).getTime())
+  if (expenses.length === LEDGER_CAP) horizons.push(new Date(expenses[expenses.length - 1].date).getTime())
+  const horizon = horizons.length ? Math.max(...horizons) : null
+
+  const merged = [...income, ...expenses]
+    .filter((t) => horizon === null || new Date(t.date).getTime() > horizon)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+
+  // Newest -> oldest, starting from the authoritative balance. Rounded to the
+  // cent at each step so 168 float subtractions cannot drift a displayed figure.
+  let running = opts.balance
+  const transactions: Transaction[] = merged.map((t) => {
+    const row = { ...t, runningBalance: running }
+    running = Math.round((running - (t.type === 'income' ? t.amount : -t.amount)) * 100) / 100
+    return row
   })
-  return withRunning.reverse()
+
+  return { transactions, truncated: horizon !== null }
 }
 
 /**
