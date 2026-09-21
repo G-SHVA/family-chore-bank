@@ -67,4 +67,34 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     host: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // STABLE VENDOR CHUNKS. Route pages are split by React.lazy in
+        // App.tsx; this keeps the third-party code they share in a few
+        // predictable files. The point is caching, not size: /assets/* is
+        // served with a one-year immutable cache (public/_headers), so a
+        // vendor chunk whose contents did not change keeps its hash across
+        // deploys and the tablet never re-downloads it. Left to Rollup's
+        // defaults, a one-line app change can reshuffle shared code and
+        // invalidate hundreds of kB.
+        //
+        // Recharts is NOT listed: it is imported only by lazy routes, so
+        // Rollup already gives it its own shared chunk that the entry never
+        // references. Naming it here would achieve the same split, but the
+        // automatic one is proof that nothing on the critical path pulls it
+        // in — if it ever merges into the entry, something new imported it.
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-supabase': ['@supabase/supabase-js'],
+          // First-screen dependency via PinPad -> Modal; see App.tsx.
+          'vendor-motion': ['framer-motion'],
+          // Tree-shaken to the icons actually used (~15 kB). Without this,
+          // every icon shared by two lazy routes became its own ~0.3 kB
+          // chunk — fourteen extra requests for nothing.
+          'vendor-icons': ['lucide-react'],
+        },
+      },
+    },
+  },
 }))
