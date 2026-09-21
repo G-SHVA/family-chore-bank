@@ -2263,9 +2263,16 @@ width: four 80px pills, ONE row, no clipped text, zero horizontal overflow.
 
 ## SHIPPED 2026-09-21 — code splitting, and truncation instance 5 closed
 
-Two changes, deployed separately. Balances opened and closed at POCO $15.37 /
-Cuddles $2.50 with $0.00 variance; no PIN was entered by Claude and no row
-was written by any verification step.
+Two changes, deployed separately. Balances opened at POCO $15.37 / Cuddles
+$2.50 and closed at POCO $13.67 / Cuddles $5.35. The difference is REAL
+FAMILY ACTIVITY, not a test artifact: 22 grade-related credits and penalties
+("Receive 'A' on Assignment" x10, "'A' on Test", "'C'" / "Below 'C'"
+penalties) were entered from a parent screen between 11:55 and 11:59 local
+while the child side was being verified, all via approve_chore /
+apply_expense. They reconcile exactly (Cuddles +2.85, POCO -1.70) and were
+deliberately NOT reversed -- the 2026-09-08 precedent. No PIN was entered
+by Claude and no row was written by any verification step; the ledger
+checks below were all taken before 11:55, against $15.37.
 
 ### Route-based code splitting
 
