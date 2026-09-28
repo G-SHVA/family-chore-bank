@@ -146,6 +146,26 @@ sides equally — meaning a divergence between ledger and balance cannot be
 closed by simply crediting or charging the child. Diagnose which of the two is
 wrong before acting.
 
+### SESSION CLOSE CHECK — REJECTION NOTE
+
+Before every deploy, verify RejectModal in Dashboard.tsx:
+1. Reject button does NOT have disabled={!note.trim()}
+2. Label reads 'Add a note (optional)'
+3. No nag block present
+
+This has regressed twice (after Session A dashboard rewrite and again on
+2026-09-28). It must be checked at session end the same way balances are
+checked. If any of the three fail, fix before deploying.
+
+DO NOT CONFUSE IT WITH ITS NEIGHBOURS. The same file holds two decline modals
+that DO require a note, deliberately: DeclineRequestModal (chore requests) and
+the loan-request decline. Both carry `disabled={!note.trim()}` and a nag line
+by design — a child who asked for MORE work or for a loan is owed a reason.
+Check the component NAMED RejectModal, not the first `disabled={!note.trim()}`
+a grep finds. (Diagnosed 2026-09-28: RejectModal at HEAD already met all
+three conditions; the required-note modals nearby are the likely source of
+the report.)
+
 ## Design Principles
 
 ### ONE SCREEN ONE JOB
@@ -2368,6 +2388,32 @@ entries whose URL contains /rest/v1/ before and after each pill tap gave the
 zero-read evidence for the range switches. Note dev StrictMode double-runs
 mount effects, so the bounded pair appears TWICE in dev and once in
 production.
+
+## SHIPPED 2026-09-28 — searchable selectors, claim search
+
+No schema change, no money moved. Balances opened and closed at POCO $21.82
+/ Cuddles $10.40.
+
+SearchableSelect (src/components/ui/SearchableSelect.tsx) replaces the four
+Quick Add <select>s: child (all tabs), Direct Award library chore (73),
+Assign Chore (73), Add Expense (~30). Prefix matches rank above substring
+matches, so "mow" finds Mow Lawn before anything containing "mow". Only
+`label` is searched; `detail` (price · frequency) is display-only so "daily"
+does not match every daily chore. Every other parent <select> has 8 or fewer
+options and was left native. There is NO `bg-card-hover` token; the active
+option uses bg-wash. Selected option is antique, never primary gold.
+
+Claim library search: an input above the categories. Empty = the collapsed
+category view, unchanged. Non-empty = one flat list of the same tiles,
+filtered in memory (zero reads, terms never logged). Results exclude chores
+on the child's ACTIVE roster exactly as the categories do — "dog" shows 4 for
+POCO against 5 in SQL because Pick Up Dog Poop is on his roster (door 2).
+
+TEST ARTIFACT, deliberately left: assignment c343976b ("Get Caught Serving
+the Family", POCO, 2026-09-28) was completed by Claude acting as POCO and
+rejected by the parent with the note "TEST — verifying reject button...".
+A rejection moves no money; it is recorded so the note is not mistaken for a
+real one.
 
 ## NEXT FEATURE — none currently queued
 

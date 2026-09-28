@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Check, Loader2 } from 'lucide-react'
+import { ArrowLeft, Check, Loader2, Search, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getClaimableChores,
@@ -96,6 +96,27 @@ export default function ChildClaim() {
    */
   const [justRequested, setJustRequested] = useState<Set<string>>(new Set())
 
+  /**
+   * Global search. Empty = the category view, exactly as before. Non-empty =
+   * one flat list of matching tiles, no categories — a child who knows what
+   * they want should not have to guess which category it lives in. Filtering
+   * is over rows already in memory, so typing costs no reads. Search terms are
+   * never logged or stored anywhere.
+   */
+  const [search, setSearch] = useState('')
+  const searchResults = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return null
+    const starts: Chore[] = []
+    const contains: Chore[] = []
+    for (const chore of groups.flatMap((g) => g.chores)) {
+      const title = chore.title.toLowerCase()
+      if (title.startsWith(q)) starts.push(chore)
+      else if (title.includes(q)) contains.push(chore)
+    }
+    return [...starts, ...contains]
+  }, [groups, search])
+
   const load = useCallback(async () => {
     if (!memberId || !familyId) return
     setLoading(true)
@@ -150,6 +171,45 @@ export default function ChildClaim() {
 
   const total = groups.reduce((n, g) => n + g.chores.length, 0)
 
+  /** One tile, shared by the category view and the flat search results. */
+  function renderTile(chore: Chore) {
+    const requested = justRequested.has(chore.id)
+    return (
+      <button
+        key={chore.id}
+        type="button"
+        disabled={requested}
+        onClick={() => {
+          setSheetError(null)
+          setSelected(chore)
+        }}
+        className={cn(
+          'flex min-h-touch w-full items-center justify-between gap-4 rounded-card',
+          'border border-line bg-card px-5 py-4 text-left',
+          'transition-colors duration-150',
+          requested ? 'cursor-default border-green/40' : 'hover:border-antique/40 hover:bg-wash'
+        )}
+      >
+        <span className="min-w-0">
+          <span className="block truncate text-base text-text">{chore.title}</span>
+          <span className="label-caps mt-1 block text-[10px] text-text-muted">
+            {formatFrequency(chore.frequency, null, null)}
+          </span>
+        </span>
+        {requested ? (
+          <span className="label-caps flex shrink-0 items-center gap-1.5 text-[11px] text-green">
+            <Check className="h-4 w-4" />
+            Requested
+          </span>
+        ) : (
+          <span className="shrink-0 text-lg text-antique">
+            {formatCurrency(chore.value ?? 0, currency)}
+          </span>
+        )}
+      </button>
+    )
+  }
+
   return (
     <div className="scroll-panel mx-auto h-full max-w-3xl overflow-y-auto pr-2">
       <header className="mb-8">
@@ -171,56 +231,58 @@ export default function ChildClaim() {
         </Card>
       ) : (
         <div className="flex flex-col gap-6 pb-4">
-          {groups.map((group) => (
-            <CollapsibleSection
-              key={group.category}
-              title={categoryLabel(group.category)}
-              meta={`${group.chores.length}`}
-              maxHeight={CATEGORY_MAX_HEIGHT}
-            >
-              <div className="flex flex-col gap-2">
-                {group.chores.map((chore) => {
-                  const requested = justRequested.has(chore.id)
-                  return (
-                    <button
-                      key={chore.id}
-                      type="button"
-                      disabled={requested}
-                      onClick={() => {
-                        setSheetError(null)
-                        setSelected(chore)
-                      }}
-                      className={cn(
-                        'flex min-h-touch w-full items-center justify-between gap-4 rounded-card',
-                        'border border-line bg-card px-5 py-4 text-left',
-                        'transition-colors duration-150',
-                        requested
-                          ? 'cursor-default border-green/40'
-                          : 'hover:border-antique/40 hover:bg-wash'
-                      )}
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-base text-text">{chore.title}</span>
-                        <span className="label-caps mt-1 block text-[10px] text-text-muted">
-                          {formatFrequency(chore.frequency, null, null)}
-                        </span>
-                      </span>
-                      {requested ? (
-                        <span className="label-caps flex shrink-0 items-center gap-1.5 text-[11px] text-green">
-                          <Check className="h-4 w-4" />
-                          Requested
-                        </span>
-                      ) : (
-                        <span className="shrink-0 text-lg text-antique">
-                          {formatCurrency(chore.value ?? 0, currency)}
-                        </span>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            </CollapsibleSection>
-          ))}
+          {/* Search sits above the categories and never replaces the
+              collapsed-by-default layout: younger children still browse. */}
+          <div className="relative shrink-0">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search chores..."
+              aria-label="Search chores"
+              autoComplete="off"
+              spellCheck={false}
+              className={cn(
+                'h-11 w-full rounded-input border border-line bg-deep pl-11 pr-11 text-base text-text',
+                'placeholder:text-text-muted focus:border-antique focus:outline-none'
+              )}
+            />
+            {/* 44px hit area even though the glyph is small — a child-facing
+                touch target never goes below the codebase's floor. */}
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                aria-label="Clear search"
+                className="absolute right-0 top-0 flex h-11 w-11 items-center justify-center text-text-muted hover:text-antique"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            )}
+          </div>
+
+          {searchResults ? (
+            searchResults.length === 0 ? (
+              <p className="py-8 text-center text-text-muted">No chores match your search.</p>
+            ) : (
+              <div className="flex flex-col gap-2">{searchResults.map(renderTile)}</div>
+            )
+          ) : (
+            groups.map((group) => (
+              <CollapsibleSection
+                key={group.category}
+                title={categoryLabel(group.category)}
+                meta={`${group.chores.length}`}
+                maxHeight={CATEGORY_MAX_HEIGHT}
+              >
+                <div className="flex flex-col gap-2">{group.chores.map(renderTile)}</div>
+              </CollapsibleSection>
+            ))
+          )}
         </div>
       )}
 

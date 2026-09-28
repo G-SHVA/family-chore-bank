@@ -51,6 +51,7 @@ import type { Chore, Expense, FamilyMember } from '@/lib/supabase'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
+import { SearchableSelect, type SearchableOption } from '@/components/ui/SearchableSelect'
 import { cn, formatCurrency, initials, timeAgo } from '@/lib/utils'
 
 export default function ParentDashboard() {
@@ -1244,6 +1245,28 @@ function QuickAdd({
       </div>
     ) : null
 
+  // Option lists for the searchable selectors. Only the label is searched; the
+  // price and frequency ride along as display-only detail.
+  const childOptions: SearchableOption[] = children.map((c) => ({
+    value: c.id,
+    label: c.display_name ?? 'Child',
+  }))
+  const awardChoreOptions: SearchableOption[] = chores.map((c) => ({
+    value: c.id,
+    label: c.title,
+    detail: formatCurrency(c.value, currency),
+  }))
+  const assignChoreOptions: SearchableOption[] = chores.map((c) => ({
+    value: c.id,
+    label: c.title,
+    detail: `${formatCurrency(c.value, currency)} · ${formatFrequency(c.frequency, null, null)}`,
+  }))
+  const expenseOptions: SearchableOption[] = expenses.map((e) => ({
+    value: e.id,
+    label: e.title,
+    detail: formatCurrency(e.amount, currency),
+  }))
+
   const tabs = [
     { key: 'chore', label: 'Assign Chore' },
     { key: 'expense', label: 'Add Expense' },
@@ -1287,14 +1310,12 @@ function QuickAdd({
           ))}
         </div>
 
-        <select value={childId} onChange={(e) => setChildId(e.target.value)} className={fieldClass}>
-          <option value="">Select child…</option>
-          {children.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.display_name}
-            </option>
-          ))}
-        </select>
+        <SearchableSelect
+          options={childOptions}
+          value={childId || null}
+          onChange={setChildId}
+          placeholder="Select child…"
+        />
 
         {mode === 'award' ? (
           <>
@@ -1319,18 +1340,12 @@ function QuickAdd({
 
             {source === 'library' ? (
               <>
-                <select
-                  value={awardChoreId}
-                  onChange={(e) => setAwardChoreId(e.target.value)}
-                  className={fieldClass}
-                >
-                  <option value="">Select chore…</option>
-                  {chores.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.title} · {formatCurrency(c.value, currency)}
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  options={awardChoreOptions}
+                  value={awardChoreId || null}
+                  onChange={setAwardChoreId}
+                  placeholder="Select chore…"
+                />
 
                 <div>
                   <label htmlFor="award-qty" className={labelClass}>
@@ -1590,21 +1605,15 @@ function QuickAdd({
           </>
         ) : (
           <>
-            <select value={itemId} onChange={(e) => setItemId(e.target.value)} className={fieldClass}>
-              <option value="">{mode === 'chore' ? 'Select chore…' : 'Select expense…'}</option>
-              {mode === 'chore'
-                ? chores.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.title} · {formatCurrency(c.value, currency)} ·{' '}
-                      {formatFrequency(c.frequency, null, null)}
-                    </option>
-                  ))
-                : expenses.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.title} · {formatCurrency(e.amount, currency)}
-                    </option>
-                  ))}
-            </select>
+            {/* Keyed by mode so switching Assign Chore <-> Add Expense remounts
+                it with a closed panel and an empty query. */}
+            <SearchableSelect
+              key={mode}
+              options={mode === 'chore' ? assignChoreOptions : expenseOptions}
+              value={itemId || null}
+              onChange={setItemId}
+              placeholder={mode === 'chore' ? 'Select chore…' : 'Select expense…'}
+            />
 
             {dailyReadout}
 
