@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Check, Loader2, Search, X } from 'lucide-react'
+import { ArrowLeft, Check, Loader2, Pin, Search, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getClaimableChores,
@@ -9,6 +9,14 @@ import {
   formatFrequency,
   type ClaimGroup,
 } from '@/features/chores/choreService'
+import {
+  getPinnedChoreIds,
+  pinChore,
+  unpinChore,
+  PIN_CAP,
+  PIN_CAP_MESSAGE,
+} from '@/features/chores/pinnedChoresService'
+import { rankItems } from '@/lib/search'
 import type { Chore } from '@/lib/supabase'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -105,24 +113,66 @@ export default function ChildClaim() {
    */
   const [search, setSearch] = useState('')
   const searchResults = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return null
-    const starts: Chore[] = []
-    const contains: Chore[] = []
-    for (const chore of groups.flatMap((g) => g.chores)) {
-      const title = chore.title.toLowerCase()
-      if (title.startsWith(q)) starts.push(chore)
-      else if (title.includes(q)) contains.push(chore)
-    }
-    return [...starts, ...contains]
+    if (!search.trim()) return null
+    return rankItems(
+      groups.flatMap((g) => g.chores),
+      search,
+      (c) => c.title
+    )
   }, [groups, search])
+
+  /**
+   * Pinned chore ids, oldest pin first. One extra read on this screen only
+   * (the child dashboard's read budget is untouched). A failure here must not
+   * take the library down with it, so it degrades to "nothing pinned".
+   */
+  const [pinnedIds, setPinnedIds] = useState<string[]>([])
+  const [pinNote, setPinNote] = useState<string | null>(null)
+
+  /**
+   * The Pinned section lists only chores that are CLAIMABLE right now: a
+   * pinned chore that has since landed on the child's roster, or has an open
+   * request, is no longer in `groups`, so it drops out silently and returns on
+   * its own if it becomes claimable again.
+   */
+  const pinnedChores = useMemo(() => {
+    const byId = new Map(groups.flatMap((g) => g.chores).map((c) => [c.id, c]))
+    return pinnedIds.flatMap((id) => {
+      const chore = byId.get(id)
+      return chore ? [chore] : []
+    })
+  }, [groups, pinnedIds])
+
+  async function togglePin(chore: Chore) {
+    if (!memberId) return
+    const wasPinned = pinnedIds.includes(chore.id)
+    setPinNote(null)
+    if (!wasPinned && pinnedIds.length >= PIN_CAP) {
+      setPinNote(PIN_CAP_MESSAGE)
+      return
+    }
+    // Optimistic: the icon must answer the tap instantly. Reverted on failure.
+    setPinnedIds((prev) => (wasPinned ? prev.filter((id) => id !== chore.id) : [...prev, chore.id]))
+    try {
+      if (wasPinned) await unpinChore(memberId, chore.id)
+      else await pinChore(memberId, chore.id)
+    } catch (e) {
+      setPinnedIds((prev) => (wasPinned ? [...prev, chore.id] : prev.filter((id) => id !== chore.id)))
+      setPinNote(e instanceof Error ? e.message : 'That pin did not save.')
+    }
+  }
 
   const load = useCallback(async () => {
     if (!memberId || !familyId) return
     setLoading(true)
     setError(null)
     try {
-      setGroups(await getClaimableChores(memberId, familyId))
+      const [claimable, pins] = await Promise.all([
+        getClaimableChores(memberId, familyId),
+        getPinnedChoreIds(memberId).catch(() => [] as string[]),
+      ])
+      setGroups(claimable)
+      setPinnedIds(pins)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load available chores.')
     } finally {
@@ -171,42 +221,64 @@ export default function ChildClaim() {
 
   const total = groups.reduce((n, g) => n + g.chores.length, 0)
 
-  /** One tile, shared by the category view and the flat search results. */
+  /**
+   * One tile, shared by the category view, the Pinned section and the flat
+   * search results.
+   *
+   * The pin is a SIBLING of the tile button, not a child: a button inside a
+   * button is invalid and the inner tap would also fire the outer. It is 44px,
+   * the child-facing floor, and the tile reserves room for it on the right.
+   */
   function renderTile(chore: Chore) {
     const requested = justRequested.has(chore.id)
+    const pinned = pinnedIds.includes(chore.id)
     return (
-      <button
-        key={chore.id}
-        type="button"
-        disabled={requested}
-        onClick={() => {
-          setSheetError(null)
-          setSelected(chore)
-        }}
-        className={cn(
-          'flex min-h-touch w-full items-center justify-between gap-4 rounded-card',
-          'border border-line bg-card px-5 py-4 text-left',
-          'transition-colors duration-150',
-          requested ? 'cursor-default border-green/40' : 'hover:border-antique/40 hover:bg-wash'
-        )}
-      >
-        <span className="min-w-0">
-          <span className="block truncate text-base text-text">{chore.title}</span>
-          <span className="label-caps mt-1 block text-[10px] text-text-muted">
-            {formatFrequency(chore.frequency, null, null)}
+      <div key={chore.id} className="relative">
+        <button
+          type="button"
+          disabled={requested}
+          onClick={() => {
+            setSheetError(null)
+            setSelected(chore)
+          }}
+          className={cn(
+            'flex min-h-touch w-full items-center justify-between gap-4 rounded-card',
+            'border border-line bg-card py-4 pl-5 pr-16 text-left',
+            'transition-colors duration-150',
+            requested ? 'cursor-default border-green/40' : 'hover:border-antique/40 hover:bg-wash'
+          )}
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-base text-text">{chore.title}</span>
+            <span className="label-caps mt-1 block text-[10px] text-text-muted">
+              {formatFrequency(chore.frequency, null, null)}
+            </span>
           </span>
-        </span>
-        {requested ? (
-          <span className="label-caps flex shrink-0 items-center gap-1.5 text-[11px] text-green">
-            <Check className="h-4 w-4" />
-            Requested
-          </span>
-        ) : (
-          <span className="shrink-0 text-lg text-antique">
-            {formatCurrency(chore.value ?? 0, currency)}
-          </span>
-        )}
-      </button>
+          {requested ? (
+            <span className="label-caps flex shrink-0 items-center gap-1.5 text-[11px] text-green">
+              <Check className="h-4 w-4" />
+              Requested
+            </span>
+          ) : (
+            <span className="shrink-0 text-lg text-antique">
+              {formatCurrency(chore.value ?? 0, currency)}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => void togglePin(chore)}
+          aria-label={pinned ? `Unpin ${chore.title}` : `Pin ${chore.title}`}
+          aria-pressed={pinned}
+          className={cn(
+            'absolute right-2 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full',
+            'transition-colors duration-150',
+            pinned ? 'text-antique' : 'text-text-muted/50 hover:text-antique'
+          )}
+        >
+          <Pin className={cn('h-5 w-5', pinned && 'fill-current')} />
+        </button>
+      </div>
     )
   }
 
@@ -231,6 +303,21 @@ export default function ChildClaim() {
         </Card>
       ) : (
         <div className="flex flex-col gap-6 pb-4">
+          {pinNote && (
+            <p role="status" className="shrink-0 text-center text-sm text-text-muted">
+              {pinNote}
+            </p>
+          )}
+
+          {/* Always open, and hidden while searching: a child hunting for one
+              specific chore does not want the favourites in the way. */}
+          {!searchResults && pinnedChores.length > 0 && (
+            <section className="shrink-0" aria-label="Pinned chores">
+              <h2 className="label-caps mb-3 text-[11px] text-text-muted">Pinned</h2>
+              <div className="flex flex-col gap-2">{pinnedChores.map(renderTile)}</div>
+            </section>
+          )}
+
           {/* Search sits above the categories and never replaces the
               collapsed-by-default layout: younger children still browse. */}
           <div className="relative shrink-0">

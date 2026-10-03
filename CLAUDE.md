@@ -108,6 +108,24 @@ Background: #181818 | Cards: #242424 | Gold: #E6B800
 Green: #42B883 | Text: #FFFFFF | Muted: #A0A0A0
 Border radius: 12px cards | Min touch target: 64px
 
+## TEST BEFORE DEPLOY — Gary's standing process (2026-10-03)
+
+Deploy ONCE, after the build has been tested. Order: build -> local dev server
+-> test in Claude in Chrome -> fix -> session close checks -> deploy.
+- Gary starts `npm run dev` in PowerShell (the Linux workspace cannot run the
+  build or dev server: node_modules holds Windows binaries). The dev server
+  auto-logs-in from .env.local, so nobody types the kiosk password.
+- Claude drives Chrome at the local address and runs the verification list.
+  Gary enters each member's PIN to switch screens; Claude never enters PINs.
+- Do not drive the production domain's Login screen: Claude does not type the
+  kiosk password. Local dev auto-login is the route.
+- Only after the checks pass: `npm run build`, the credential grep, then
+  `npm run deploy`.
+- If testing turns up a problem, FIX it, rebuild and re-test; do not just
+  report it. Gary asked for this on 2026-10-03.
+- When done, the local server is stopped (Ctrl+C in Gary's PowerShell) and
+  the test tab is closed.
+
 ## SESSION BALANCE PROTOCOL — MANDATORY
 
 The children use this app daily. An unexplained balance change destroys trust
@@ -2414,6 +2432,42 @@ the Family", POCO, 2026-09-28) was completed by Claude acting as POCO and
 rejected by the parent with the note "TEST — verifying reject button...".
 A rejection moves no money; it is recorded so the note is not mistaken for a
 real one.
+
+## SHIPPED 2026-10-03 — forgiving search, pinned claim chores
+
+Balances opened and closed at POCO $20.04 / Cuddles $10.75. No money moved.
+
+### Search is ONE implementation: src/lib/search.ts
+SearchableSelect (parent dropdowns) and the child claim-library search both
+call rankItems(). Tiers, best first: exact, starts-with, contains, every word
+in any order ("lawn mow" finds Mow Lawn), then typo tolerance (letters appear
+in order, "vauum" finds Vacuum). The typo tier applies only from FOUR
+characters: on 2-3 characters an in-order letter match hits a large share of a
+130-chore library. Nothing is excluded for a weak match; weak matches sort
+last. Do not add inline startsWith/includes filtering in a component.
+
+### SCHEMA FACTS — PINNED CLAIM CHORES (migration 20261003165157)
+`pinned_claim_chores (family_member_id, chore_id, pinned_at)`, UNIQUE on the
+pair, both FKs ON DELETE CASCADE. Cap of 5 per child is enforced in
+pinnedChoresService, NOT by a constraint (a child should read a sentence, not a
+Postgres error). RLS is FAMILY-scoped via family_members.user_id = auth.uid();
+it cannot be child-scoped because the kiosk is one shared session, so the
+member_id filter in the service is the real boundary (same as loans and goals).
+The first draft policy compared a member's family to itself and never checked
+the caller; it was replaced before applying.
+- Pins are shown only for chores that are CLAIMABLE now. A pinned chore that
+  lands on the roster or has an open request drops out of getClaimableChores
+  and so out of the Pinned section; it returns by itself when claimable again.
+- The pin is a SIBLING of the tile button (never nested), 44px target.
+- Claim screen load gained one read (pins), failure-tolerant. The child
+  dashboard's 2-read budget is untouched.
+
+### Housekeeping
+- Test row c343976b (POCO, "Get Caught Serving the Family", rejected, TEST
+  note) was approved for deletion by Gary 2026-10-03 but the delete prompt was
+  cancelled twice; if it still exists, delete it (a rejection moved no money).
+- The Linux workspace cannot run `npm run build` (node_modules holds Windows
+  binaries). Build, credential grep and deploy must run on Gary's machine.
 
 ## NEXT FEATURE — none currently queued
 

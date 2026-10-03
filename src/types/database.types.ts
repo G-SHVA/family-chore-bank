@@ -822,6 +822,42 @@ export type Database = {
           },
         ]
       }
+      pinned_claim_chores: {
+        Row: {
+          chore_id: string
+          family_member_id: string
+          id: string
+          pinned_at: string
+        }
+        Insert: {
+          chore_id: string
+          family_member_id: string
+          id?: string
+          pinned_at?: string
+        }
+        Update: {
+          chore_id?: string
+          family_member_id?: string
+          id?: string
+          pinned_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pinned_claim_chores_chore_id_fkey"
+            columns: ["chore_id"]
+            isOneToOne: false
+            referencedRelation: "chores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pinned_claim_chores_family_member_id_fkey"
+            columns: ["family_member_id"]
+            isOneToOne: false
+            referencedRelation: "family_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plan_availability: {
         Row: {
           description: string | null

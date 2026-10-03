@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { rankItems } from '@/lib/search'
 
 /**
  * A searchable replacement for a long native <select> on parent screens.
@@ -9,10 +10,11 @@ import { cn } from '@/lib/utils'
  * a tablet a native <select> opens a system wheel the parent has to flick
  * through; typing "mow" is faster than scrolling to M.
  *
- * MATCHING: prefix matches first, then substring matches, each group in the
- * caller's original order — so "mow" ranks "Mow Lawn" above "Remove lawn
- * clippings". Only `label` is searched; `detail` is display-only, so typing
- * "daily" does not match every daily chore by its frequency suffix.
+ * MATCHING lives in lib/search (shared with the child claim library): exact,
+ * prefix, substring, all-words-any-order, then typo tolerance — so "mow" ranks
+ * "Mow Lawn" above "Remove lawn clippings", and "lawn mow" still finds it.
+ * Only `label` is searched; `detail` is display-only, so typing "daily" does
+ * not match every daily chore by its frequency suffix.
  *
  * NOT A PRIMARY ELEMENT. It is a utility control: the only gold it carries is
  * antique, on the currently selected option. The screen's gold budget belongs
@@ -39,16 +41,7 @@ interface SearchableSelectProps {
 }
 
 export function rankOptions(options: SearchableOption[], query: string): SearchableOption[] {
-  const q = query.trim().toLowerCase()
-  if (!q) return options
-  const starts: SearchableOption[] = []
-  const contains: SearchableOption[] = []
-  for (const o of options) {
-    const label = o.label.toLowerCase()
-    if (label.startsWith(q)) starts.push(o)
-    else if (label.includes(q)) contains.push(o)
-  }
-  return [...starts, ...contains]
+  return rankItems(options, query, (o) => o.label)
 }
 
 export function SearchableSelect({
