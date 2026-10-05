@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Check, Loader2, Pin, Search, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -90,6 +90,7 @@ export default function ChildClaim() {
   const [groups, setGroups] = useState<ClaimGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   /** The chore whose action sheet is open, if any. */
   const [selected, setSelected] = useState<Chore | null>(null)
@@ -183,6 +184,16 @@ export default function ChildClaim() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Arriving from a pinned chip on My Chores (?chore=<id>): open that chore's
+  // action sheet once the library has loaded, then drop the param.
+  useEffect(() => {
+    const wanted = searchParams.get('chore')
+    if (!wanted || loading) return
+    const chore = groups.flatMap((g) => g.chores).find((c) => c.id === wanted)
+    if (chore) setSelected(chore)
+    setSearchParams({}, { replace: true })
+  }, [searchParams, loading, groups, setSearchParams])
 
   async function submit(path: 'once' | 'roster') {
     if (!selected || !memberId) return
@@ -425,6 +436,26 @@ export default function ChildClaim() {
             <p className="text-sm text-text-muted">
               Your parent will need to approve before it appears in your chore list.
             </p>
+
+            {/* Pinning is NOT a request: no parent sees it, nothing to approve.
+                Kept visually apart from the two request buttons above. */}
+            <div className="flex flex-col gap-2 border-t border-line pt-4">
+              <Button
+                variant="secondary"
+                size="lg"
+                fullWidth
+                onClick={() => void togglePin(selected)}
+              >
+                <Pin
+                  className={cn('h-5 w-5 shrink-0', pinnedIds.includes(selected.id) && 'fill-current')}
+                />
+                {pinnedIds.includes(selected.id) ? 'Unpin from my favorites' : 'Pin to my favorites'}
+              </Button>
+              <p className="text-sm text-text-muted">
+                Pins are just for you — no need to ask a parent.
+              </p>
+              {pinNote && <p className="text-sm text-danger">{pinNote}</p>}
+            </div>
           </div>
         )}
       </Modal>

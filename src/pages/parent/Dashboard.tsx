@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Loader2, Check, X, Clock, CheckCircle2, Percent, Sparkles, Plus } from 'lucide-react'
+import { Loader2, Check, X, Clock, CheckCircle2, AlertTriangle, Sparkles, Plus } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
   generateDailyAssignments,
   getApprovalQueue,
   approveChore,
-  approveChoreHalfCredit,
-  splitHalfCredit,
+  rejectAsFalseSubmission,
   rejectChore,
   quickAssignChore,
   directAwardFromLibrary,
@@ -137,29 +136,20 @@ export default function ParentDashboard() {
   }
 
   /**
-   * Approve at half value — the book's "second reminder: 50% off credit".
-   *
-   * Guarded by the same inFlight set as a full approval, and for a sharper
-   * reason: this path issues TWO writes (approve, then penalise), so a double
-   * tap could credit twice and charge twice.
+   * False Submission: reject (no credit) and charge the "False Completed Task"
+   * expense. Same inFlight guard as a full approval — it issues two writes.
    */
-  async function handleHalfCredit(a: PendingApproval) {
+  async function handleFalseSubmission(a: PendingApproval) {
     if (!activeMember || !familyId) return
     if (inFlight.current.has(a.id)) return
     inFlight.current.add(a.id)
     setBusyId(a.id)
     try {
-      await approveChoreHalfCredit(
-        a.id,
-        a.assigned_to,
-        activeMember.id,
-        familyId,
-        a.chore?.title,
-        a.chore?.value
-      )
+      await rejectAsFalseSubmission(a.id, a.assigned_to, familyId)
       await Promise.all([load(), refresh()])
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Half credit failed.')
+      setError(e instanceof Error ? e.message : 'False submission failed.')
+      await load().catch(() => undefined)
     } finally {
       inFlight.current.delete(a.id)
       setBusyId(null)
@@ -319,7 +309,7 @@ export default function ParentDashboard() {
                   currency={currency}
                   busy={busyId === entry.item.id}
                   onFullCredit={handleApprove}
-                  onHalfCredit={handleHalfCredit}
+                  onFalseSubmission={handleFalseSubmission}
                   onNoCredit={setRejecting}
                   onReviewLoan={setReviewingLoan}
                   onDeclineLoan={setDecliningLoan}
@@ -476,7 +466,7 @@ function QueueCard({
   currency,
   busy,
   onFullCredit,
-  onHalfCredit,
+  onFalseSubmission,
   onNoCredit,
   onApproveRequest,
   onDeclineRequest,
@@ -490,7 +480,7 @@ function QueueCard({
   currency: string
   busy: boolean
   onFullCredit: (a: PendingApproval) => void
-  onHalfCredit: (a: PendingApproval) => void
+  onFalseSubmission: (a: PendingApproval) => void
   onNoCredit: (a: PendingApproval) => void
   onApproveRequest: (r: ChoreRequest, isRoster: boolean) => void
   onDeclineRequest: (r: ChoreRequest) => void
@@ -598,7 +588,7 @@ function QueueCard({
             disabled={busy}
           >
             {/* The figure is on the button, not only in the meta line above,
-                for the same reason Half carries its own: a parent must be able
+                for the same reason: a parent must be able
                 to read what they are authorising on the control they are about
                 to tap. Both come from the chore's value via the same source the
                 write uses, so they cannot drift. */}
@@ -609,12 +599,12 @@ function QueueCard({
             <Button
               size="lgResponsive"
               variant="accent"
-              onClick={() => onHalfCredit(item as PendingApproval)}
+              onClick={() => onFalseSubmission(item as PendingApproval)}
               disabled={busy}
-              title="Completed after a second reminder"
+              title="Reject and charge the False Completed Task expense"
             >
-              <Percent className="h-5 w-5 shrink-0" />
-              Half ({formatCurrency(halfCreditAmount(item as PendingApproval), currency)})
+              <AlertTriangle className="h-5 w-5 shrink-0" />
+              False Submission
             </Button>
             <Button
               size="lgResponsive"
@@ -829,18 +819,6 @@ const CHARACTER_MOMENT_DEFAULT = '0.25'
 
 /** The pre-filled, editable reason on the No Credit path (the book's third reminder). */
 const REMINDER_REJECT_NOTE = 'Task completed after multiple reminders'
-
-/**
- * What a Half Credit will actually put in the child's account, in dollars.
- *
- * Derived from splitHalfCredit — the SAME function the write uses — so the
- * figure printed on the button and the figure credited can never drift. On a
- * chore too small to halve this is $0.00, and the button says so rather than
- * promising a credit the degenerate path will not issue.
- */
-function halfCreditAmount(a: PendingApproval): number {
-  return splitHalfCredit(a.chore?.value).creditCents / 100
-}
 
 function Avatar({ member }: { member: { display_name: string | null; avatar_url: string | null } | null }) {
   if (member?.avatar_url) {

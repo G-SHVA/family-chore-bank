@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { Loader2, ListChecks } from 'lucide-react'
+import { useParams, Link } from 'react-router-dom'
+import { Loader2, ListChecks, Pin } from 'lucide-react'
 import { AnimatePresence } from 'framer-motion'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -13,6 +13,7 @@ import {
   isLapsed,
   type AssignmentWithChore,
 } from '@/features/chores/choreService'
+import { getPinnedChores, type PinnedChore } from '@/features/chores/pinnedChoresService'
 import { ChoreCard } from '@/components/shared/ChoreCard'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection'
@@ -52,6 +53,7 @@ export default function ChildChores() {
   const [instances, setInstances] = useState<AssignmentWithChore[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<Filter>('today')
+  const [pinned, setPinned] = useState<PinnedChore[]>([])
 
   const load = useCallback(async () => {
     if (!memberId) return
@@ -63,7 +65,7 @@ export default function ChildChores() {
     // the live rows out of the window (see getActiveInstances). Each read is
     // bounded by its own status filter, and the rejected one additionally by a
     // 14-day window.
-    const [active, approved, rejected, declinedRoster] = await Promise.all([
+    const [active, approved, rejected, declinedRoster, pins] = await Promise.all([
       getActiveInstances(memberId),
       getRecentApprovedInstances(memberId),
       getRejectedSince(memberId),
@@ -73,7 +75,10 @@ export default function ChildChores() {
       // Without this the parent's note on a declined request would exist in
       // the database and appear on no child screen anywhere.
       getDeclinedRosterRequestsSince(memberId),
+      // Pinned favourites from the claim library. Never blocks the tab.
+      getPinnedChores(memberId).catch(() => [] as PinnedChore[]),
     ])
+    setPinned(pins)
     // getActiveInstances still returns 'rejected' rows for other callers; the
     // date-bounded read is the one this screen shows, so drop the unbounded
     // duplicates rather than rendering a row twice.
@@ -160,11 +165,33 @@ export default function ChildChores() {
     )
   }
 
+  // A pinned chore already on the child's list is not a shortcut to anything.
+  const onList = new Set(instances.filter((i) => i.status !== 'approved' && i.status !== 'rejected').map((i) => i.chore_id))
+  const pinnedShortcuts = pinned.filter((p) => !onList.has(p.id))
+
   const nothingAtAll = actionable.length === 0 && awaiting.length === 0 && misses.length === 0
 
   return (
     <div className="mx-auto max-w-3xl">
       <FilterBar filter={filter} setFilter={setFilter} />
+
+      {pinnedShortcuts.length > 0 && (
+        <section aria-label="Pinned chores" className="mb-6 flex shrink-0 flex-col gap-2">
+          <div className="label-caps px-1 text-[10px] text-text-muted">Pinned</div>
+          <div className="flex flex-wrap gap-2">
+            {pinnedShortcuts.map((p) => (
+              <Link
+                key={p.id}
+                to={`/child/${memberId}/claim?chore=${p.id}`}
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-input border border-antique/40 bg-wash px-4 text-sm text-text"
+              >
+                <Pin className="h-4 w-4 shrink-0 fill-current text-antique" />
+                {p.title}
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       {nothingAtAll ? (
         <EmptyState icon={ListChecks} title="No chores here" subtitle="Nice work!" />

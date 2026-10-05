@@ -300,6 +300,16 @@ export async function declinePurchaseRequest(expenseId: string, note?: string): 
   }
 }
 
+/** One library expense by exact title (case-insensitive), or null. */
+export async function findFamilyExpenseByTitle(
+  familyId: string,
+  title: string
+): Promise<Expense | null> {
+  const expenses = await getFamilyExpenses(familyId)
+  const want = title.trim().toLowerCase()
+  return expenses.find((e) => e.title.trim().toLowerCase() === want) ?? null
+}
+
 /** Family expense library (only family-scoped expenses are applicable under RLS). */
 export async function getFamilyExpenses(familyId: string): Promise<Expense[]> {
   let query = supabase

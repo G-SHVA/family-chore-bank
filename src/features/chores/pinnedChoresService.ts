@@ -34,6 +34,27 @@ export async function getPinnedChoreIds(memberId: string): Promise<string[]> {
   return (data ?? []).map((r) => r.chore_id)
 }
 
+export interface PinnedChore {
+  id: string
+  title: string
+  value: number | null
+}
+
+/** Pinned chores with their titles, for the My Chores strip. One joined read. */
+export async function getPinnedChores(memberId: string): Promise<PinnedChore[]> {
+  const { data, error } = await supabase
+    .from('pinned_claim_chores')
+    .select('chore:chores(id, title, value, is_archived)')
+    .eq('family_member_id', memberId)
+    .order('pinned_at', { ascending: true })
+    .limit(PIN_CAP * 4)
+  if (error) throw error
+  return (data ?? []).flatMap((r) => {
+    const c = r.chore as unknown as (PinnedChore & { is_archived?: boolean | null }) | null
+    return c && !c.is_archived ? [{ id: c.id, title: c.title, value: c.value }] : []
+  })
+}
+
 export async function pinChore(memberId: string, choreId: string): Promise<void> {
   const { count, error: countError } = await supabase
     .from('pinned_claim_chores')

@@ -1,12 +1,11 @@
 import { supabase } from '@/lib/supabase'
 import type { Chore, ChoreAssignment, FamilyMember } from '@/lib/supabase'
 import type { TablesInsert } from '@/types/database.types'
-// The Half Credit penalty leg. expenseService imports nothing from here, so
-// this edge introduces no cycle.
+// expenseService imports nothing from here, so this edge introduces no cycle.
 import {
-  directChargeCustom,
+  applyExpense,
+  findFamilyExpenseByTitle,
   getPurchaseRequests,
-  REMINDER_PENALTY_CATEGORY,
   type PurchaseRequest,
 } from '@/features/expenses/expenseService'
 // The merged approval queue's third read. loanService imports expenseService
@@ -1057,101 +1056,56 @@ export async function approveChore(assignmentId: string, parentMemberId: string)
   if (error) throw error
 }
 
-/**
- * How a Half Credit approval splits a chore's value, in whole cents.
- *
- * The CREDIT rounds DOWN and the penalty takes the remainder, so a value that
- * does not halve cleanly resolves in the parent's favour rather than handing
- * out a phantom cent: 25c splits 12c credited / 13c charged, not 13c/12c.
- *
- * Exported for the button label. The parent must be able to read the exact
- * figure they are authorising BEFORE they tap, so the UI and the write have to
- * derive it from one function rather than each doing its own arithmetic.
- */
-export function splitHalfCredit(value: number | null | undefined): {
-  valueCents: number
-  creditCents: number
-  penaltyCents: number
-} {
-  const valueCents = Math.max(0, Math.round((value ?? 0) * 100))
-  const creditCents = Math.floor(valueCents / 2)
-  return { valueCents, creditCents, penaltyCents: valueCents - creditCents }
-}
-
-/** The auto-note on the degenerate no-credit path. See approveChoreHalfCredit. */
-export const HALF_CREDIT_TOO_SMALL_NOTE =
-  'Chore value too small to split — no credit issued after reminders.'
+/** The library expense a False Submission charges. Parents own its amount. */
+export const FALSE_SUBMISSION_EXPENSE_TITLE = 'False Completed Task'
 
 /**
- * Approve a chore at HALF its value — the book's "second reminder for a task:
- * 50% off credit".
+ * Reject a submission the child did not actually do, AND charge them the
+ * family's "False Completed Task" expense.
  *
- * TWO WRITES, AND NEITHER TOUCHES A BALANCE. There is no such thing as a
- * partial credit at the database level: update_balance_on_chore_approval reads
- * `(SELECT value FROM chores WHERE id = NEW.chore_id)`, and chore_assignments
- * has no amount column to override it with. So the chore is approved at FULL
- * value through the ordinary approve_chore RPC, and the difference is clawed
- * back as a one-off penalty through the ordinary apply_expense RPC. The two
- * existing triggers do the money, exactly as they do for every other
- * transaction in the app.
+ * Replaces Half Credit. No balance is written here: the charge goes through the
+ * ordinary apply_expense RPC like every other expense.
  *
- * The book itself lists reminders under EXPENSE templates, so the resulting
- * two-line ledger — the full credit, then what the reminder cost — is the
- * faithful reading rather than a compromise. A child sees what they earned and
- * what they lost, instead of one quietly reduced number.
- *
- * ORDER IS LOAD-BEARING. Approve first, penalise second. If the penalty leg
- * fails the child keeps the full credit and the thrown error says so, so a
- * parent can settle it with a Direct Charge. The reverse order would leave a
- * child DEBITED for a chore that was never CREDITED if the approval failed,
- * which is the one outcome this must never produce. Failure favours the child.
+ * ORDER IS LOAD-BEARING. The status flip is guarded on 'completed', so it is
+ * also the concurrency gate: a second tablet that already approved or rejected
+ * the chore matches no row and throws BEFORE any money moves. The charge comes
+ * second; if it fails the chore stays rejected (no credit) and the error says
+ * the charge was not applied, so a parent can settle it with a Direct Charge.
+ * Failure favours the child.
  */
-export async function approveChoreHalfCredit(
+export async function rejectAsFalseSubmission(
   assignmentId: string,
   memberId: string,
-  parentMemberId: string,
-  familyId: string,
-  choreTitle: string | null | undefined,
-  choreValue: number | null | undefined
+  familyId: string
 ): Promise<void> {
-  const { creditCents, penaltyCents } = splitHalfCredit(choreValue)
-
-  // Degenerate case: a 1c chore halves to a 0c credit. Approving would write an
-  // 'approved' row worth nothing and then charge the whole penny back — a
-  // meaningless $0.00 credit dressed up as an approval. Record it as what it
-  // actually is instead. Value 0 chores land here too, correctly.
-  if (creditCents === 0) {
-    await rejectChore(assignmentId, HALF_CREDIT_TOO_SMALL_NOTE)
-    return
+  const expense = await findFamilyExpenseByTitle(familyId, FALSE_SUBMISSION_EXPENSE_TITLE)
+  if (!expense) {
+    throw new Error(
+      `No "${FALSE_SUBMISSION_EXPENSE_TITLE}" expense found in the family expense library. Add one in Chores & Expenses first.`
+    )
   }
 
-  await approveChore(assignmentId, parentMemberId)
-
-  if (penaltyCents === 0) return // an even value; nothing to claw back
+  const { data, error } = await supabase
+    .from('chore_assignments')
+    .update({ status: 'rejected', notes: "Credit requested for a chore that wasn't done." })
+    .eq('id', assignmentId)
+    .eq('is_template', false)
+    .eq('status', 'completed')
+    .select('id')
+  if (error) throw error
+  if (!data || data.length === 0) {
+    throw new Error('That chore was already handled on another device.')
+  }
 
   try {
-    await directChargeCustom(
-      familyId,
-      memberId,
-      // Labelled so the lesson is explicit in the child's ledger rather than a
-      // cryptic deduction sitting under the credit it belongs to.
-      `Reminder penalty — ${choreTitle ?? 'chore'}`,
-      penaltyCents / 100,
-      'Task completed after a second reminder',
-      REMINDER_PENALTY_CATEGORY
-    )
+    await applyExpense(expense.id, memberId)
   } catch (e) {
     throw new Error(
-      `The chore was approved at full credit, but the ${formatCents(penaltyCents)} reminder penalty was not applied — settle it with a Direct Charge. ${
+      `The chore was rejected with no credit, but the "${FALSE_SUBMISSION_EXPENSE_TITLE}" charge was not applied — settle it with a Direct Charge. ${
         e instanceof Error ? e.message : 'Unknown error.'
       }`
     )
   }
-}
-
-/** Whole cents as a plain dollar string, for messages that must state an amount. */
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`
 }
 
 /** Reject a completed chore. The note is optional (no balance change). */

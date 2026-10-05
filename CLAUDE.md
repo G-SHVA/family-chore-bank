@@ -2469,6 +2469,23 @@ the caller; it was replaced before applying.
 - The Linux workspace cannot run `npm run build` (node_modules holds Windows
   binaries). Build, credential grep and deploy must run on Gary's machine.
 
+## SHIPPED 2026-10-05 — False Submission, pins in modal + My Chores
+
+- Half Credit is GONE. The chore approval card is Full Credit / False Submission / No Credit.
+  `rejectAsFalseSubmission` (choreService) flips the assignment to rejected (guarded on status='completed' —
+  the concurrency gate, runs BEFORE any money moves; note "Credit requested for a chore that wasn't done."),
+  then applies the family's library expense titled "False Completed Task" (currently $1.00; parents own the
+  amount) via apply_expense. No reserved category. If the charge fails the chore stays rejected and the error
+  says so. `REMINDER_PENALTY_CATEGORY` is kept only so old Half Credit ledger rows stay out of the library.
+- Pins need no parent approval (a pin is just a pinned_claim_chores row). Claim.tsx action sheet has a
+  Pin/Unpin button apart from the request buttons. Child My Chores tab shows a "Pinned" chip strip
+  (getPinnedChores, one extra read); a chip opens Claim with ?chore=<id>, which opens that chore's sheet.
+  Chips hide for chores already on the child's list.
+- Rejections: DeclineRequestModal and LoanDeclineModal require a note BY DESIGN; RejectModal and
+  PurchaseDeclineModal are optional. Not a bug.
+- Tested 2026-10-05 on POCO: $0.10 test chore -> False Submission -> rejected + $1.00 expense; reversed with a
+  $1.00 Direct Award. Balances back to 11.19 / 15.10. Residue: chore "ZZ Test Chore" (rejected), two ledger lines.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch
