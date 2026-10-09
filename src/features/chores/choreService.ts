@@ -2077,22 +2077,34 @@ export async function getClaimableChores(
 }
 
 /**
- * PATH 1 — "Do this today". A one-off instance the child asked for.
+ * PATH 1 — "Do this today". The child takes a chore from the library.
+ *
+ * NO APPROVAL STEP. Everything in the library is already pre-approved by the
+ * parent, so this inserts a live `pending` instance due at the end of today.
+ * It is then ordinary work: the child taps Mark Complete on My Chores and the
+ * parent chooses Full Credit / False Submission / No Credit. (Before
+ * 2026-10-09 this inserted a `requested` row that a parent had to approve
+ * before the child could even start, which meant two parent taps per chore and
+ * credit lost whenever the day ended in between.)
  *
  * assigned_by is the CHILD's own member id: this chore was self-selected, and
  * the row should say so. (assigned_by references family_members, unlike
  * chores.created_by which references auth.users — do not mix them.)
  *
+ * template_id stays NULL: that is the discriminator door 4 of
+ * getClaimableChores reads to keep the chore out of the library while it is
+ * live today, so a child cannot claim the same chore twice.
+ *
  * due_date is the end of today IN THE FAMILY'S TIMEZONE via endOfDay(), not
- * the tablet's. A kiosk in a different zone would otherwise date the request
- * to the wrong civil day.
+ * the tablet's. A kiosk in a different zone would otherwise date the chore to
+ * the wrong civil day.
  */
-export async function createOneTimeRequest(choreId: string, memberId: string): Promise<void> {
+export async function claimChoreForToday(choreId: string, memberId: string): Promise<void> {
   const { error } = await supabase.from('chore_assignments').insert({
     chore_id: choreId,
     assigned_to: memberId,
     assigned_by: memberId,
-    status: REQUESTED_STATUS,
+    status: 'pending',
     is_template: false,
     template_id: null,
     due_date: endOfDay(new Date()).toISOString(),

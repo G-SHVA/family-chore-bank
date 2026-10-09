@@ -2486,6 +2486,19 @@ the caller; it was replaced before applying.
 - Tested 2026-10-05 on POCO: $0.10 test chore -> False Submission -> rejected + $1.00 expense; reversed with a
   $1.00 Direct Award. Balances back to 11.19 / 15.10. Residue: chore "ZZ Test Chore" (rejected), two ledger lines.
 
+## CHANGED 2026-10-09 — "Do this today" no longer needs approval
+
+- Incident: POCO's evening "Do this today" requests were approved by Mom (requested -> pending) but never
+  marked complete, so they expired with no credit. Two parent taps per chore was the design flaw.
+- Now `claimChoreForToday` (choreService; was createOneTimeRequest) inserts a live `pending` instance due end of
+  today (template_id NULL, assigned_by = child). Child taps Mark Complete on My Chores, parent gets the normal
+  Full Credit / False Submission / No Credit card. Library chores are pre-approved by definition.
+- Claim.tsx: tile reads "On your list" (not "Requested"), a note links to My Chores. Roster path ("Add to my
+  regular chores") STILL needs parent approval. Chore-request queue code is kept for roster requests/legacy rows.
+- Future idea (not built): child proposes a NEW chore for the library; parent approves; it joins the library.
+- Data repair 2026-10-09: ten expired requests approved via approve_chore (impersonating the kiosk uid in a DO
+  block), POCO +$1.85. Tested 2026-10-09: claim -> complete -> Full Credit, POCO 2.54 -> 2.64 (real $0.10 test).
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch

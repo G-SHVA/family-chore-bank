@@ -4,7 +4,7 @@ import { ArrowLeft, Check, Loader2, Pin, Search, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getClaimableChores,
-  createOneTimeRequest,
+  claimChoreForToday,
   createRosterRequest,
   formatFrequency,
   type ClaimGroup,
@@ -104,6 +104,9 @@ export default function ChildClaim() {
    * out from under their finger — so the tile stays put and reads "Requested".
    */
   const [justRequested, setJustRequested] = useState<Set<string>>(new Set())
+  /** The subset of justRequested that went straight onto today's list (no approval). */
+  const [justClaimed, setJustClaimed] = useState<Set<string>>(new Set())
+  const [claimNote, setClaimNote] = useState<string | null>(null)
 
   /**
    * Global search. Empty = the category view, exactly as before. Non-empty =
@@ -201,11 +204,19 @@ export default function ChildClaim() {
     setSheetError(null)
     try {
       if (path === 'once') {
-        await createOneTimeRequest(selected.id, memberId)
+        await claimChoreForToday(selected.id, memberId)
       } else {
         await createRosterRequest(selected.id, memberId)
       }
       setJustRequested((prev) => new Set(prev).add(selected.id))
+      if (path === 'once') {
+        setJustClaimed((prev) => new Set(prev).add(selected.id))
+        setClaimNote(
+          `"${selected.title}" is on your list for today. Find it on My Chores and tap Mark Complete when you're done.`
+        )
+      } else {
+        setClaimNote(null)
+      }
       setSelected(null)
     } catch (e) {
       setSheetError(e instanceof Error ? e.message : 'That request did not go through.')
@@ -268,7 +279,7 @@ export default function ChildClaim() {
           {requested ? (
             <span className="label-caps flex shrink-0 items-center gap-1.5 text-[11px] text-green">
               <Check className="h-4 w-4" />
-              Requested
+              {justClaimed.has(chore.id) ? 'On your list' : 'Requested'}
             </span>
           ) : (
             <span className="shrink-0 text-lg text-antique">
@@ -314,6 +325,15 @@ export default function ChildClaim() {
         </Card>
       ) : (
         <div className="flex flex-col gap-6 pb-4">
+          {claimNote && (
+            <Card role="status" className="shrink-0 border-green/40 text-sm text-text">
+              {claimNote}{' '}
+              <Link to={`/child/${memberId}/chores`} className="text-antique underline">
+                Go to My Chores
+              </Link>
+            </Card>
+          )}
+
           {pinNote && (
             <p role="status" className="shrink-0 text-center text-sm text-text-muted">
               {pinNote}
@@ -434,7 +454,8 @@ export default function ChildClaim() {
             {sheetError && <p className="text-sm text-danger">{sheetError}</p>}
 
             <p className="text-sm text-text-muted">
-              Your parent will need to approve before it appears in your chore list.
+              "Do this today" goes straight onto your list. Adding a regular chore needs a
+              parent's OK first.
             </p>
 
             {/* Pinning is NOT a request: no parent sees it, nothing to approve.
