@@ -90,7 +90,8 @@ export default function ExpensesTab() {
             recent.map((r) => (
               <div key={r.id} className="flex items-center justify-between text-sm">
                 <span className="text-text">
-                  {r.expense_title} → {r.member_name}
+                  {r.expense_title}
+                  {r.note ? ` (${r.note})` : ''} → {r.member_name}
                 </span>
                 <span className="flex items-center gap-3 text-text-muted">
                   <span className="font-semibold text-danger">

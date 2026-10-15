@@ -266,6 +266,7 @@ export type Database = {
           expense_id: string
           family_member_id: string
           id: string
+          note: string | null
         }
         Insert: {
           amount: number
@@ -274,6 +275,7 @@ export type Database = {
           expense_id: string
           family_member_id: string
           id?: string
+          note?: string | null
         }
         Update: {
           amount?: number
@@ -282,6 +284,7 @@ export type Database = {
           expense_id?: string
           family_member_id?: string
           id?: string
+          note?: string | null
         }
         Relationships: [
           {
@@ -1050,7 +1053,7 @@ export type Database = {
         }[]
       }
       apply_expense: {
-        Args: { p_expense_id: string; p_member_id: string }
+        Args: { p_expense_id: string; p_member_id: string; p_note?: string }
         Returns: undefined
       }
       approve_chore: {

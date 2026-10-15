@@ -514,6 +514,7 @@ function TransactionHistorySection({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium text-text">{t.description}</div>
+                {t.detail && <div className="truncate text-xs text-text-muted">{t.detail}</div>}
                 <div className="label-caps text-[10px] text-text-muted">
                   {formatDateInZone(new Date(t.date), { month: 'short', day: 'numeric' })}
                 </div>

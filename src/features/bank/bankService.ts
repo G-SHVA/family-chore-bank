@@ -8,6 +8,8 @@ export interface Transaction {
   id: string
   date: string // ISO
   description: string
+  /** Optional second line, e.g. the chore a False Submission was charged for. */
+  detail?: string | null
   type: 'income' | 'expense'
   amount: number // always positive; sign implied by type
   runningBalance: number
@@ -77,7 +79,13 @@ export interface LedgerOptions {
 }
 
 type ChoreRow = { id: string; approved_at: string | null; chore: { title: string | null; value: number } | null }
-type ExpRow = { id: string; applied_at: string | null; amount: number; expense: { title: string | null } | null }
+type ExpRow = {
+  id: string
+  applied_at: string | null
+  amount: number
+  note: string | null
+  expense: { title: string | null } | null
+}
 type Unbalanced = Omit<Transaction, 'runningBalance'>
 
 /**
@@ -131,7 +139,7 @@ export async function getTransactionHistory(
     .limit(LEDGER_CAP)
   let expensesQ = supabase
     .from('expense_applications')
-    .select('id, applied_at, amount, expense:expenses(title)')
+    .select('id, applied_at, amount, note, expense:expenses(title)')
     .eq('family_member_id', memberId)
     .not('applied_at', 'is', null)
     .order('applied_at', { ascending: false })
@@ -157,6 +165,7 @@ export async function getTransactionHistory(
     id: `e_${r.id}`,
     date: r.applied_at as string,
     description: r.expense?.title ?? 'Expense',
+    detail: r.note ?? null,
     type: 'expense' as const,
     amount: r.amount,
   }))

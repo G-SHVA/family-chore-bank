@@ -332,10 +332,19 @@ export async function getFamilyExpenses(familyId: string): Promise<Expense[]> {
  * Apply an expense to a child — atomic balance deduction via RPC.
  * Negative balances are allowed (the child "owes").
  */
-export async function applyExpense(expenseId: string, memberId: string): Promise<void> {
+export async function applyExpense(
+  expenseId: string,
+  memberId: string,
+  // Optional per-charge detail stored on expense_applications.note, e.g. the
+  // name of the chore a False Submission was charged for. Omitted = null, so
+  // every existing caller behaves exactly as before.
+  note?: string | null
+): Promise<void> {
   const { error } = await supabase.rpc('apply_expense', {
     p_expense_id: expenseId,
     p_member_id: memberId,
+    // undefined is dropped from the request, so the RPC's DEFAULT NULL applies.
+    p_note: note?.trim() || undefined,
   })
   if (error) throw error
 }
@@ -346,6 +355,7 @@ export interface RecentApplication {
   applied_at: string | null
   member_name: string | null
   expense_title: string | null
+  note: string | null
 }
 
 /** Recent expense applications across the family (for the parent overview). */
@@ -353,7 +363,7 @@ export async function getRecentExpenseApplications(limit = 10): Promise<RecentAp
   const { data, error } = await supabase
     .from('expense_applications')
     .select(
-      'id, amount, applied_at, expense:expenses(title), member:family_members!expense_applications_family_member_id_fkey(display_name)'
+      'id, amount, applied_at, note, expense:expenses(title), member:family_members!expense_applications_family_member_id_fkey(display_name)'
     )
     .order('applied_at', { ascending: false })
     .limit(limit)
@@ -362,6 +372,7 @@ export async function getRecentExpenseApplications(limit = 10): Promise<RecentAp
     id: string
     amount: number
     applied_at: string | null
+    note: string | null
     expense: { title: string | null } | null
     member: { display_name: string | null } | null
   }
@@ -371,6 +382,7 @@ export async function getRecentExpenseApplications(limit = 10): Promise<RecentAp
     applied_at: r.applied_at,
     member_name: r.member?.display_name ?? null,
     expense_title: r.expense?.title ?? null,
+    note: r.note ?? null,
   }))
 }
 

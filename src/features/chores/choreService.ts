@@ -1091,14 +1091,18 @@ export async function rejectAsFalseSubmission(
     .eq('id', assignmentId)
     .eq('is_template', false)
     .eq('status', 'completed')
-    .select('id')
+    .select('id, chore:chores(title)')
   if (error) throw error
   if (!data || data.length === 0) {
     throw new Error('That chore was already handled on another device.')
   }
+  // The chore's name rides on the charge so the ledger can say WHICH chore it
+  // was. The expense (and so per-child reporting) stays the one shared entry.
+  const choreTitle =
+    (data[0] as unknown as { chore: { title: string | null } | null }).chore?.title ?? null
 
   try {
-    await applyExpense(expense.id, memberId)
+    await applyExpense(expense.id, memberId, choreTitle)
   } catch (e) {
     throw new Error(
       `The chore was rejected with no credit, but the "${FALSE_SUBMISSION_EXPENSE_TITLE}" charge was not applied — settle it with a Direct Charge. ${

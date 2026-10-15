@@ -2495,9 +2495,29 @@ the caller; it was replaced before applying.
   Full Credit / False Submission / No Credit card. Library chores are pre-approved by definition.
 - Claim.tsx: tile reads "On your list" (not "Requested"), a note links to My Chores. Roster path ("Add to my
   regular chores") STILL needs parent approval. Chore-request queue code is kept for roster requests/legacy rows.
-- Future idea (not built): child proposes a NEW chore for the library; parent approves; it joins the library.
+- DECIDED AGAINST (2026-10-09): kids proposing new library chores. Per the book the library is parent-curated; a
+  child's idea is approved verbally and the parent creates/assigns the chore. Do not re-propose.
 - Data repair 2026-10-09: ten expired requests approved via approve_chore (impersonating the kiosk uid in a DO
   block), POCO +$1.85. Tested 2026-10-09: claim -> complete -> Full Credit, POCO 2.54 -> 2.64 (real $0.10 test).
+
+## CHANGED 2026-10-15 — False Submission records WHICH chore (expense_applications.note)
+
+- Ask: parents could not tell, days later, which chore a "False Completed Task" charge was for.
+- Decision: keep ONE shared library expense per family ("False Completed Task") so per-child reporting and
+  multi-family seeding stay clean; record the chore name PER CHARGE on the application row.
+- Migration `expense_applications_note` (run in the SQL editor 2026-10-15): `expense_applications.note text NULL`;
+  `apply_expense(p_expense_id, p_member_id, p_note text DEFAULT NULL)` replaces the 2-arg version (same auth and
+  balance trigger; EXECUTE revoked from PUBLIC/anon, granted to authenticated and service_role).
+- App: `applyExpense(expenseId, memberId, note?)`; `rejectAsFalseSubmission` reads the chore title in the guarded
+  update and passes it as the note. `bankService` ledger carries `detail` (shown as a small line under the name in
+  Bank.tsx); ExpensesTab "Recent expenses" shows the note in parentheses. `directChargeCustom` still calls the RPC
+  with two args (default null) - verified 2026-10-15.
+- Tested locally 2026-10-15: ZZ Test Chore rejected as POCO -> ledger shows the note; $0.01 no-note Direct Charge
+  still works. Test artifacts left in POCO's ledger: "TEST reversal - false submission note test" (+$1.00),
+  "TEST charge - no-note regression check" (-$0.01), "TEST reversal - no-note regression check" (+$0.01), plus a
+  rejected "ZZ Test Chore" row. Balances after: POCO $1.04, Cuddles $20.00 (same as the session start).
+- Charges made before this date have a NULL note (nothing recorded which chore). A best-effort backfill of the
+  2026-10-11 and 2026-10-13 charges was done by pairing them in order with that day's rejected chores.
 
 ## NEXT FEATURE — none currently queued
 
