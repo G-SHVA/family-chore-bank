@@ -2516,8 +2516,11 @@ the caller; it was replaced before applying.
   still works. Test artifacts left in POCO's ledger: "TEST reversal - false submission note test" (+$1.00),
   "TEST charge - no-note regression check" (-$0.01), "TEST reversal - no-note regression check" (+$0.01), plus a
   rejected "ZZ Test Chore" row. Balances after: POCO $1.04, Cuddles $20.00 (same as the session start).
-- Charges made before this date have a NULL note (nothing recorded which chore). A best-effort backfill of the
-  2026-10-11 and 2026-10-13 charges was done by pairing them in order with that day's rejected chores.
+- Charges made before this date have a NULL note (nothing recorded which chore). Backfilled 2026-10-15 for the
+  five real False Submission charges of 2026-10-11 (Brush Hair, Brush Teeth, Put On Deodorant) and 2026-10-13
+  (Pick up around house, Brush Dog), paired IN ORDER with that day's rejected chores - an order-based best guess,
+  not a recorded link - plus the 2026-10-05 ZZ Test Chore test. Four older charges (2026-09-02, and 2026-10-04
+  for Cuddles and POCO) stay blank on purpose: they predate False Submission and match no rejected chore.
 
 ## NEXT FEATURE — none currently queued
 
