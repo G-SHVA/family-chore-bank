@@ -2522,6 +2522,52 @@ the caller; it was replaced before applying.
   not a recorded link - plus the 2026-10-05 ZZ Test Chore test. Four older charges (2026-09-02, and 2026-10-04
   for Cuddles and POCO) stay blank on purpose: they predate False Submission and match no rejected chore.
 
+## SECURITY HARDENING — IN PROGRESS (started 2026-10-22)
+
+Trigger: Claude Code audit of the live DB + deployed edge functions (read-only), prompted by the PHP2Shell news.
+The app and marketing site run NO PHP. The old Namecheap Stellar WordPress hosting was the only PHP exposure:
+WordPress removed, cPanel A records deleted from Cloudflare DNS, termination requested.
+
+APPLIED (SQL in supabase/migrations/20261022150000_* and 20261022151000_*; all three local checks passed):
+- complete_paid_subscription / cleanup_expired_pending_subscriptions -> service_role only; five trigger functions
+  revoked from anon/authenticated; pin_attempts explicit deny policy.
+- Dropped users_insert_own_family_member_record + users_update_own_family_member_record (own-row update let a
+  user set role=admin; is_app_admin() = any active row with role admin). Parents still use parents_manage_family_members.
+- Dropped "Anyone can view invitation by token" and users_view_pending_invitation_placeholder (anon could list
+  every pending invite). SIGNUP WORK MUST add a SECURITY DEFINER lookup-by-token function.
+- milestone_progress: replaced ALL/true/public with milestone_progress_family_read (select, family-scoped).
+- Auth: "Allow new users to sign up" should be OFF until the signup flow is built and tested (re-enable then).
+
+APPLIED 2026-10-22 (batch 2, migrations 20261022160000..160400 + edge functions deployed; live-tested in the app):
+- apply_expense requires the member to be in the expense's family. approve_chore requires p_approved_by to be an active
+  parent/admin of the chore's family (kiosk model: the caller's auth.uid() is the shared Kiosk user, so validate the
+  approver member, do not derive it from the caller).
+- process_loan_payments(p_family_id) scoped; edge function passes the verified caller's family. Zero-arg call (cron) still all families.
+- PIN: atomic pin_attempt_begin (row-locked, escalating 60s doubling to 1h), set_member_pin_if_absent, clear_member_pin;
+  resolveCaller/memberInFamily require is_active. set-pin v3, verify-pin v3, process-loan-payments v2 deployed.
+- Group C: anon/PUBLIC EXECUTE revoked on the auth helpers + approve_chore (authenticated kept); both loans policies
+  now `to authenticated`. Only is_plan_available stays anon-callable (pricing page; revisit at signup).
+
+STILL OPEN, in this order (each needs a local test):
+ 1. set-pin: first PIN for a member with none can still be set by any family session (new-parent weakness) - needs UI
+    change: require an authorizing parent's PIN to create a parent PIN.
+ 2. search_path pinned on 17 functions (public, pg_temp). 3. Parents can edit families.subscription_tier and
+    max_children directly (free upgrade) - restrict. 4. pending_subscriptions policy service_role_manage_* is
+    `to public` - read its qual and fix. 5. stripe-webhook has verify_jwt=true; Stripe sends no JWT - fix at the Stripe step.
+ 6. Leaked-password protection toggle (Auth). 7. npm audit (high/critical only) from this repo.
+ 8. Direct expense_applications insert policy: confirm it cross-checks member vs expense family (not yet inspected).
+ 9. is_plan_available -> security invoker. 10. Confirm "Allow new users to sign up" is OFF.
+
+## RULE FOR NEW TABLES (Supabase change effective 2026-10-30)
+
+Supabase stops auto-granting Data API access to NEW tables in `public` (existing tables keep their grants). Every
+migration that creates a table MUST, in the same file: enable RLS, add its policies, and add explicit grants:
+  grant select, insert, update, delete on public.<t> to authenticated;   -- RLS decides who gets through
+  grant select, insert, update, delete on public.<t> to service_role;    -- edge functions
+Do NOT grant to anon unless the table is intentionally public (none of FCB's data is). Also applies to any
+schema rebuild from migrations (new project, preview branch, `supabase db reset`) - which is why a baseline schema
+dump that captures the existing tables' grants is on the build list. Later: audit which existing tables anon can touch.
+
 ## NEXT FEATURE — none currently queued
 
 Nothing is recorded here. The standing priorities are in the pre-launch

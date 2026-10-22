@@ -45,9 +45,16 @@ Deno.serve(async (req: Request) => {
     // a sibling. Payments are a parental act on a parental schedule.
     if (!caller.isParent) return json({ error: 'forbidden' }, 403)
 
-    const { data, error } = await admin.rpc('process_loan_payments')
+    // Scoped to the caller's own family. The SQL function with no argument
+    // processes EVERY family (that is what the future cron wants); this door
+    // must never take that path, so the family always comes from the verified
+    // caller and never from the request body.
+    const { data, error } = await admin.rpc('process_loan_payments', {
+      p_family_id: caller.familyId,
+    })
 
     if (error) {
+      console.error('process_loan_payments failed', error.message)
       // Surface the real reason. This is a money path, and a generic failure
       // message would leave a parent unable to tell "nothing was due" from
       // "the deduction failed".

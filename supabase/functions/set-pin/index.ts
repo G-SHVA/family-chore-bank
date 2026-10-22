@@ -16,7 +16,6 @@ import {
   adminClient,
   resolveCaller,
   memberInFamily,
-  readPins,
   hashPin,
   PIN_PATTERN,
 } from '../_shared/pin.ts'
@@ -42,24 +41,14 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: 'forbidden' }, 403)
     }
 
-    const { data: family, error: famErr } = await admin
-      .from('families')
-      .select('id, member_pins')
-      .eq('id', caller.familyId)
-      .single()
-
-    if (famErr || !family) return json({ ok: false, error: 'server_error' }, 500)
-
-    const pins = readPins(family.member_pins)
-
     if (action === 'clear') {
       if (!caller.isParent) return json({ ok: false, error: 'forbidden' }, 403)
-      const next = { ...pins }
-      delete next[memberId]
-      const { error } = await admin
-        .from('families')
-        .update({ member_pins: next })
-        .eq('id', caller.familyId)
+      // Atomic in SQL (member_pins - key): no read-modify-write, so two devices
+      // cannot clobber each other's PIN changes.
+      const { error } = await admin.rpc('clear_member_pin', {
+        p_family_id: caller.familyId,
+        p_member_id: memberId,
+      })
       if (error) return json({ ok: false, error: 'server_error' }, 500)
       await admin.from('pin_attempts').delete().eq('member_id', memberId)
       return json({ ok: true })
@@ -71,18 +60,15 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: 'bad_request' }, 400)
     }
 
-    const existing = pins[memberId]
-    if (typeof existing === 'string' && existing.length > 0) {
-      // A parent must clear it first; this endpoint never overwrites.
-      return json({ ok: false, error: 'pin_already_set' }, 409)
-    }
-
-    const next = { ...pins, [memberId]: hashPin(pin) }
-    const { error } = await admin
-      .from('families')
-      .update({ member_pins: next })
-      .eq('id', caller.familyId)
+    // Set-if-absent, atomically in SQL. false = a PIN already exists (a parent
+    // must clear it first; this endpoint never overwrites).
+    const { data: wasSet, error } = await admin.rpc('set_member_pin_if_absent', {
+      p_family_id: caller.familyId,
+      p_member_id: memberId,
+      p_hash: hashPin(pin),
+    })
     if (error) return json({ ok: false, error: 'server_error' }, 500)
+    if (wasSet !== true) return json({ ok: false, error: 'pin_already_set' }, 409)
 
     await admin.from('pin_attempts').delete().eq('member_id', memberId)
     return json({ ok: true })

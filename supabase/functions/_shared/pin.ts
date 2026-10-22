@@ -68,6 +68,7 @@ export async function resolveCaller(req: Request, admin: SupabaseClient): Promis
     .from('family_members')
     .select('id, family_id, role')
     .eq('user_id', userData.user.id)
+    .eq('is_active', true)
     .maybeSingle()
 
   if (meErr || !me) return null
@@ -81,7 +82,7 @@ export async function resolveCaller(req: Request, admin: SupabaseClient): Promis
   }
 }
 
-/** Confirms the target member exists inside the caller's family. */
+/** Confirms the target member exists, and is active, inside the caller's family. */
 export async function memberInFamily(
   admin: SupabaseClient,
   memberId: string,
@@ -92,6 +93,7 @@ export async function memberInFamily(
     .select('id')
     .eq('id', memberId)
     .eq('family_id', familyId)
+    .eq('is_active', true)
     .maybeSingle()
   return !error && !!data
 }

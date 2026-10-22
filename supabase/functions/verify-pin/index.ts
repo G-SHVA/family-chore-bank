@@ -41,20 +41,8 @@ Deno.serve(async (req: Request) => {
       return json({ valid: false, error: 'forbidden' }, 403)
     }
 
-    const now = new Date()
+    // 1. Load the stored value. These checks cost the caller no attempt.
 
-    // 1. Already locked out?
-    const { data: attempt } = await admin
-      .from('pin_attempts')
-      .select('failed_count, window_started_at, locked_until')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    if (attempt?.locked_until && new Date(attempt.locked_until) > now) {
-      return rateLimited(new Date(attempt.locked_until), now)
-    }
-
-    // 2. Verify against the stored value.
     const { data: family, error: famErr } = await admin
       .from('families')
       .select('id, member_pins')
@@ -80,34 +68,39 @@ Deno.serve(async (req: Request) => {
       return json({ valid: false, error: 'pin_not_hashed' }, 409)
     }
 
+    // 2. Reserve an attempt BEFORE comparing, atomically in SQL (row-locked).
+    // The old flow read the counter, compared, then wrote the failure back, so a
+    // burst of parallel requests all read "0 failures" and each got a free
+    // guess. Now at most MAX_ATTEMPTS comparisons can ever run per lock window,
+    // and every further lock doubles (60s, 120s, 240s ... capped at 1h).
+    const { data: begun, error: beginErr } = await admin.rpc('pin_attempt_begin', {
+      p_member_id: memberId,
+      p_max: MAX_ATTEMPTS,
+      p_base_seconds: LOCKOUT_SECONDS,
+    })
+    const state = Array.isArray(begun) ? begun[0] : null
+    if (beginErr || !state) return json({ valid: false, error: 'server_error' }, 500)
+
+    if (state.is_locked) {
+      return rateLimited(new Date(state.locked_until), new Date())
+    }
+
+    // 3. Compare.
     const valid = verifyAgainstStored(pin, stored)
 
     if (valid) {
-      // Clear the failure counter.
+      // Clear the counter.
       await admin.from('pin_attempts').delete().eq('member_id', memberId)
       return json({ valid: true })
     }
 
-    // 3. Record the failure.
-    const lockExpired = attempt?.locked_until && new Date(attempt.locked_until) <= now
-    const failedCount = attempt && !lockExpired ? (attempt.failed_count ?? 0) + 1 : 1
-    const windowStartedAt =
-      attempt && !lockExpired ? (attempt.window_started_at ?? now.toISOString()) : now.toISOString()
-    const lockedUntil =
-      failedCount >= MAX_ATTEMPTS ? new Date(now.getTime() + LOCKOUT_SECONDS * 1000) : null
-
-    await admin.from('pin_attempts').upsert(
-      {
-        member_id: memberId,
-        failed_count: failedCount,
-        window_started_at: windowStartedAt,
-        locked_until: lockedUntil?.toISOString() ?? null,
-      },
-      { onConflict: 'member_id' }
-    )
-
-    if (lockedUntil) return rateLimited(lockedUntil, now)
-    return json({ valid: false, attempts_remaining: MAX_ATTEMPTS - failedCount })
+    // The failure was already counted by pin_attempt_begin. If that attempt
+    // tripped the lock, say so now.
+    if (state.locked_until) return rateLimited(new Date(state.locked_until), new Date())
+    return json({
+      valid: false,
+      attempts_remaining: Math.max(0, MAX_ATTEMPTS - Number(state.attempts_used)),
+    })
   } catch {
     // Never leak internals — the client only needs to know it couldn't verify.
     return json({ valid: false, error: 'server_error' }, 500)
