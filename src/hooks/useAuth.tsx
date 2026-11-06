@@ -57,6 +57,8 @@ interface AuthContextValue {
   /** The member currently using the kiosk (null = at the picker). */
   activeMember: FamilyMember | null
   selectMember: (member: FamilyMember) => void
+  /** Merge saved changes into the active member (and the roster) without a reload. */
+  patchActiveMember: (patch: Partial<FamilyMember>) => void
   exitToPicker: () => void
   hasPin: (memberId: string) => boolean
   /** Server-side verification. The browser never sees a PIN value or hash. */
@@ -83,6 +85,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [pinStatus, setPinStatus] = useState<PinStatus>({})
   const [activeMember, setActiveMember] = useState<FamilyMember | null>(null)
   const didAutoLogin = useRef(false)
+  const activeMemberIdRef = useRef<string | null>(null)
+  activeMemberIdRef.current = activeMember?.id ?? null
 
   const loadContext = useCallback(async (userId: string) => {
     const ctx = await fetchKioskContext(userId)
@@ -163,6 +167,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const selectMember = useCallback((member: FamilyMember) => setActiveMember(member), [])
   const exitToPicker = useCallback(() => setActiveMember(null), [])
+  const patchActiveMember = useCallback((patch: Partial<FamilyMember>) => {
+    setActiveMember((prev) => (prev ? { ...prev, ...patch } : prev))
+    setAllMembers((prev) =>
+      prev.map((m) => (m.id === activeMemberIdRef.current ? { ...m, ...patch } : m))
+    )
+  }, [])
 
   const hasPin = useCallback((memberId: string) => Boolean(pinStatus[memberId]), [pinStatus])
 
@@ -240,6 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     operatorMemberId,
     activeMember,
     selectMember,
+    patchActiveMember,
     exitToPicker,
     hasPin,
     verifyPin,

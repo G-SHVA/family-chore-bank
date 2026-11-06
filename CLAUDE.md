@@ -2555,8 +2555,28 @@ STILL OPEN, in this order (each needs a local test):
     max_children directly (free upgrade) - restrict. 4. pending_subscriptions policy service_role_manage_* is
     `to public` - read its qual and fix. 5. stripe-webhook has verify_jwt=true; Stripe sends no JWT - fix at the Stripe step.
  6. Leaked-password protection toggle (Auth). 7. npm audit (high/critical only) from this repo.
- 8. Direct expense_applications insert policy: confirm it cross-checks member vs expense family (not yet inspected).
+ 8. CHECKED 2026-10-22, no fix needed: parents_manage_expense_applications requires a parent of the expense's family.
+ NOTE items 3+4 (inspected 2026-10-22, DEFERRED until after signup): parents_update_their_families is UPDATE with
+    is_family_parent(id) on ALL columns, so a parent can set subscription_tier/max_children/member_pins by direct API call.
+    Fix = REVOKE UPDATE ON families FROM authenticated, then GRANT UPDATE (<only the columns the settings screens edit>).
+    Need the column list from the app's families updates first. Item 4 fix = retarget service_role_manage_pending_subscriptions
+    to `service_role` (harmless today: it only passes for the service_role JWT).
  9. is_plan_available -> security invoker. 10. Confirm "Allow new users to sign up" is OFF.
+
+## CHANGED 2026-11-06 - Chore style per child (family_members.chore_flow)
+
+Why: some kids plan their day (Poco), others do chores first and only log in to report them (Marie/Cuddles).
+`family_members.chore_flow` text, nullable, CHECK in ('plan','checkoff'). NULL = not asked yet, behaves as 'plan'.
+- Child first login with NULL: non-dismissible two-tile question (components/shared/ChoreStylePrompt.tsx, mounted in
+  ChildLayout). Wording: "Make my to-do list first" / "Do them, then check them off". Saves via updateMember and
+  useAuth().patchActiveMember (no reload). After that ONLY a parent changes it: Settings > Family members > Edit >
+  "Chore style" (children only). The member card meta line shows it (Planner / Check-off / Style not chosen).
+- 'checkoff': Claim.tsx first button reads "I did this - earn $X" and calls choreService.claimChoreAsDone (same row as
+  claimChoreForToday but status 'completed' + completed_at, due end of day) so it lands in the approval queue. Helper
+  text, confirmation note and tile label ("Sent to a parent") change; the other two buttons are untouched.
+- Migration: 20261106120000_family_members_chore_flow.sql (additive; no new table, so no grants needed).
+- Tested locally 2026-11-06 as Poco: question shown, saved, I-did-this row completed and visible to Dad, parent flip to
+  Planner saved, planner modal unchanged. Not built: next-day "did you finish?" check-in (unfinished chores delete at midnight).
 
 ## RULE FOR NEW TABLES (Supabase change effective 2026-10-30)
 

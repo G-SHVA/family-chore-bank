@@ -219,6 +219,8 @@ export interface MemberInput {
   role: string[]
   avatar_url?: string | null
   user_id?: string | null
+  /** 'plan' | 'checkoff' | null (not chosen). Only sent from the Edit member form. */
+  chore_flow?: string | null
 }
 
 /**
@@ -246,7 +248,7 @@ export async function addMember(familyId: string, input: MemberInput): Promise<F
 
 export async function updateMember(
   memberId: string,
-  input: Partial<Pick<FamilyMember, 'display_name' | 'role' | 'avatar_url'>>
+  input: Partial<Pick<FamilyMember, 'display_name' | 'role' | 'avatar_url' | 'chore_flow'>>
 ): Promise<void> {
   const { error } = await supabase.from('family_members').update(input).eq('id', memberId)
   if (error) throw error

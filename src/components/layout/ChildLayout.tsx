@@ -2,6 +2,7 @@ import { NavLink, Outlet, useParams, Navigate, useNavigate } from 'react-router-
 import { Home, ListChecks, Landmark, Trophy, LogOut, type LucideIcon } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { cn } from '@/lib/utils'
+import { ChoreStylePrompt } from '@/components/shared/ChoreStylePrompt'
 
 interface NavItem {
   to: string
@@ -53,6 +54,8 @@ export function ChildLayout() {
           <span>Switch user</span>
         </button>
       </header>
+
+      <ChoreStylePrompt />
 
       <main className="scroll-skin flex-1 overflow-y-auto px-6 pb-28">
         <Outlet />

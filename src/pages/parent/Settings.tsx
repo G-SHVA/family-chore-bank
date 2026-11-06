@@ -92,6 +92,7 @@ export default function Settings() {
                       {isParent(m) ? 'Parent' : 'Child'} · {formatCurrency(m.balance ?? 0, currency)}
                       {' · '}
                       {hasPin(m.id) ? 'PIN set' : 'No PIN'}
+                      {!isParent(m) && ` · ${m.chore_flow === 'checkoff' ? 'Check-off' : m.chore_flow === 'plan' ? 'Planner' : 'Style not chosen'}`}
                     </div>
                   </div>
                 </div>
@@ -253,6 +254,9 @@ function MemberFormModal({
     member && isParent(member) ? 'parent' : 'child'
   )
   const [avatar, setAvatar] = useState(member?.avatar_url ?? '')
+  const [choreFlow, setChoreFlow] = useState<'' | 'plan' | 'checkoff'>(
+    member?.chore_flow === 'plan' || member?.chore_flow === 'checkoff' ? member.chore_flow : ''
+  )
   const [busy, setBusy] = useState(false)
   const inputClass =
     'w-full rounded-input border border-line bg-deep p-3 text-text focus:border-antique focus:outline-none'
@@ -265,6 +269,7 @@ function MemberFormModal({
         display_name: name.trim(),
         role: [role],
         avatar_url: avatar.trim() || null,
+        ...(member && role === 'child' ? { chore_flow: choreFlow || null } : {}),
       })
     } finally {
       setBusy(false)
@@ -295,6 +300,20 @@ function MemberFormModal({
           <option value="child">Child</option>
           <option value="parent">Parent</option>
         </select>
+        {member && role === 'child' && (
+          <>
+            <label className="label-caps text-[11px] text-text-muted">Chore style</label>
+            <select
+              value={choreFlow}
+              onChange={(e) => setChoreFlow(e.target.value as '' | 'plan' | 'checkoff')}
+              className={inputClass}
+            >
+              <option value="">Not chosen (asks at next sign-in)</option>
+              <option value="plan">Planner: builds a to-do list, then marks chores complete</option>
+              <option value="checkoff">Check-off: reports chores already done ("I did this")</option>
+            </select>
+          </>
+        )}
         <label className="label-caps text-[11px] text-text-muted">Avatar image URL (optional)</label>
         <input
           value={avatar}

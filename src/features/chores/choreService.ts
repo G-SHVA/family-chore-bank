@@ -2117,6 +2117,29 @@ export async function claimChoreForToday(choreId: string, memberId: string): Pro
 }
 
 /**
+ * PATH 1b — "I did this", for a child whose chore_flow is 'checkoff'.
+ *
+ * The same row claimChoreForToday writes, already in 'completed': the child did
+ * the chore before opening the app, so it goes straight to the parent's approval
+ * queue exactly as a dashboard Mark Complete would. due_date is end of day like
+ * every other same-day instance, so the midnight cleanup treats it identically.
+ */
+export async function claimChoreAsDone(choreId: string, memberId: string): Promise<void> {
+  const now = new Date()
+  const { error } = await supabase.from('chore_assignments').insert({
+    chore_id: choreId,
+    assigned_to: memberId,
+    assigned_by: memberId,
+    status: 'completed',
+    completed_at: now.toISOString(),
+    is_template: false,
+    template_id: null,
+    due_date: endOfDay(now).toISOString(),
+  })
+  if (error) throw error
+}
+
+/**
  * PATH 2 — "Add to my regular chores". A roster addition the child asked for.
  *
  * is_active = false is load-bearing, not tidiness: it is one of the two layers

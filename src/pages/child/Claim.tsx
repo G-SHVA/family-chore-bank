@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/useAuth'
 import {
   getClaimableChores,
   claimChoreForToday,
+  claimChoreAsDone,
   createRosterRequest,
   formatFrequency,
   type ClaimGroup,
@@ -83,7 +84,10 @@ const CATEGORY_MAX_HEIGHT = 420
 
 export default function ChildClaim() {
   const { memberId } = useParams()
-  const { family } = useAuth()
+  const { family, activeMember } = useAuth()
+  // 'checkoff' kids report chores they already did; everyone else (including a
+  // not-yet-answered NULL) keeps the plan-your-day flow.
+  const checkoff = activeMember?.chore_flow === 'checkoff'
   const currency = family?.currency ?? 'USD'
   const familyId = family?.id
 
@@ -204,7 +208,8 @@ export default function ChildClaim() {
     setSheetError(null)
     try {
       if (path === 'once') {
-        await claimChoreForToday(selected.id, memberId)
+        if (checkoff) await claimChoreAsDone(selected.id, memberId)
+        else await claimChoreForToday(selected.id, memberId)
       } else {
         await createRosterRequest(selected.id, memberId)
       }
@@ -212,7 +217,9 @@ export default function ChildClaim() {
       if (path === 'once') {
         setJustClaimed((prev) => new Set(prev).add(selected.id))
         setClaimNote(
-          `"${selected.title}" is on your list for today. Find it on My Chores and tap Mark Complete when you're done.`
+          checkoff
+            ? `"${selected.title}" is sent to a parent to approve. Nice work!`
+            : `"${selected.title}" is on your list for today. Find it on My Chores and tap Mark Complete when you're done.`
         )
       } else {
         setClaimNote(null)
@@ -279,7 +286,7 @@ export default function ChildClaim() {
           {requested ? (
             <span className="label-caps flex shrink-0 items-center gap-1.5 text-[11px] text-green">
               <Check className="h-4 w-4" />
-              {justClaimed.has(chore.id) ? 'On your list' : 'Requested'}
+              {justClaimed.has(chore.id) ? (checkoff ? 'Sent to a parent' : 'On your list') : 'Requested'}
             </span>
           ) : (
             <span className="shrink-0 text-lg text-antique">
@@ -432,7 +439,7 @@ export default function ChildClaim() {
                 disabled={submitting}
                 onClick={() => void submit('once')}
               >
-                Do this today — earn {formatCurrency(selected.value ?? 0, currency)}
+                {checkoff ? 'I did this' : 'Do this today'} — earn {formatCurrency(selected.value ?? 0, currency)}
               </Button>
 
               {/* Only for chores that can actually recur. A 'once' chore has
@@ -454,8 +461,10 @@ export default function ChildClaim() {
             {sheetError && <p className="text-sm text-danger">{sheetError}</p>}
 
             <p className="text-sm text-text-muted">
-              "Do this today" goes straight onto your list. Adding a regular chore needs a
-              parent's OK first.
+              {checkoff
+                ? '"I did this" sends it to a parent to approve.'
+                : '"Do this today" goes straight onto your list.'}{' '}
+              Adding a regular chore needs a parent's OK first.
             </p>
 
             {/* Pinning is NOT a request: no parent sees it, nothing to approve.
